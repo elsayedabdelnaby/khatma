@@ -1,0 +1,24 @@
+{
+  "name": "khatma-backend",
+  "version": "1.0.0",
+  "description": "Khatma App - Quran Completion Backend (AWS Lambda + DynamoDB)",
+  "main": "index.js",
+  "scripts": {
+    "deploy:dev": "sam deploy --config-env dev",
+    "deploy:prod": "sam deploy --config-env prod",
+    "local": "sam local start-api",
+    "build": "sam build",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.995.0",
+    "@aws-sdk/s3-request-presigner": "^3.995.0",
+    "firebase-admin": "^12.0.0",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  },
+  "author": "Khatma Team",
+  "license": "PRIVATE"
+}

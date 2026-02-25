@@ -1,0 +1,683 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: "Khatma App Backend Quran Completion App - Serverless Architecture\n"
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+    - dev
+    - prod
+    Description: Environment name (dev or prod)
+  FirebaseSSMParam:
+    Type: String
+    Default: /khatma/firebase-service-account
+    Description: SSM Parameter name for Firebase service account
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: nodejs18.x
+    MemorySize: 256
+    Architectures:
+    - x86_64
+    Environment:
+      Variables:
+        ENVIRONMENT:
+          Ref: Environment
+        USERS_TABLE:
+          Ref: UsersTable
+        KHATMAS_TABLE:
+          Ref: KhatmasTable
+        KHATMA_PARTS_TABLE:
+          Ref: KhatmaPartsTable
+        KHATMA_INVITATIONS_TABLE:
+          Ref: KhatmaInvitationsTable
+        KHATMA_TYPES_TABLE:
+          Ref: KhatmaTypesTable
+        BANNERS_TABLE:
+          Ref: BannersTable
+        NOTIFICATIONS_TABLE:
+          Ref: NotificationsTable
+        USER_REMINDERS_TABLE:
+          Ref: UserRemindersTable
+        NOTIFICATION_TYPES_TABLE:
+          Ref: NotificationTypesTable
+        NOTIFICATIONS_QUEUE_URL:
+          Ref: NotificationsQueue
+        INVITATIONS_QUEUE_URL:
+          Ref: InvitationsQueue
+        FIREBASE_SSM_PARAM:
+          Ref: FirebaseSSMParam
+        BANNER_IMAGES_BUCKET:
+          Fn::Sub: khatma-banner-images-${Environment}-${AWS::AccountId}
+  Api:
+    Cors:
+      AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+      AllowHeaders: "'Content-Type,Authorization,Accept-Language'"
+      AllowOrigin: "'*'"
+    Auth:
+      DefaultAuthorizer: FirebaseAuthorizer
+      Authorizers:
+        FirebaseAuthorizer:
+          FunctionArn:
+            Fn::GetAtt:
+            - AuthorizerFunction
+            - Arn
+Resources:
+  AuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: functions/authorizer/index.handler
+      CodeUri: s3://aws-sam-cli-managed-default-samclisourcebucket-m5wcffukrowp/khatma-backend-dev/088eda162f0a20ddebbaa55eac4878dd
+      Description: Firebase Token Authorizer - verifies every request
+      Timeout: 10
+      MemorySize: 128
+      Policies:
+      - SSMParameterReadPolicy:
+          ParameterName:
+            Ref: FirebaseSSMParam
+    Metadata:
+      SamResourceId: AuthorizerFunction
+  HealthCheckFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: functions/health/index.handler
+      CodeUri: s3://aws-sam-cli-managed-default-samclisourcebucket-m5wcffukrowp/khatma-backend-dev/088eda162f0a20ddebbaa55eac4878dd
+      Description: Health check endpoint - returns OK if everything is working
+      Events:
+        HealthCheck:
+          Type: Api
+          Properties:
+            Path: /health
+            Method: get
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      SamResourceId: HealthCheckFunction
+  UserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: functions/user/index.handler
+      CodeUri: s3://aws-sam-cli-managed-default-samclisourcebucket-m5wcffukrowp/khatma-backend-dev/088eda162f0a20ddebbaa55eac4878dd
+      Description: User management - sync, get profile, update profile
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: UsersTable
+      Events:
+        SyncUser:
+          Type: Api
+          Properties:
+            Path: /auth/sync
+            Method: post
+        GetMe:
+          Type: Api
+          Properties:
+            Path: /auth/me
+            Method: get
+        UpdateMe:
+          Type: Api
+          Properties:
+            Path: /auth/me
+            Method: put
+    Metadata:
+      SamResourceId: UserFunction
+  KhatmaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: functions/khatma/index.handler
+      CodeUri: s3://aws-sam-cli-managed-default-samclisourcebucket-m5wcffukrowp/khatma-backend-dev/088eda162f0a20ddebbaa55eac4878dd
+      Description: Khatma CRUD - create, list, details, reserve parts, complete
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: KhatmasTable
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: KhatmaPartsTable
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: UsersTable
+      Events:
+        CreateKhatma:
+          Type: Api
+          Properties:
+            Path: /khatmas
+            Method: post
+        ListKhatmas:
+          Type: Api
+          Properties:
+            Path: /khatmas
+            Method: get
+        GetKhatma:
+          Type: Api
+          Properties:
+            Path: /khatmas/{khatmaId}
+            Method: get
+        ReserveParts:
+          Type: Api
+          Properties:
+            Path: /khatmas/{khatmaId}/parts/reserve
+            Method: post
+        CompleteParts:
+          Type: Api
+          Properties:
+            Path: /khatmas/{khatmaId}/parts/complete
+            Method: post
+        AddExtraParts:
+          Type: Api
+          Properties:
+            Path: /khatmas/{khatmaId}/parts/add-extra
+            Method: post
+    Metadata:
+      SamResourceId: KhatmaFunction
+  HomeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: functions/home/index.handler
+      CodeUri: s3://aws-sam-cli-managed-default-samclisourcebucket-m5wcffukrowp/khatma-backend-dev/088eda162f0a20ddebbaa55eac4878dd
+      Description: Home page data - banners, my chapters summary
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: BannersTable
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: KhatmasTable
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: KhatmaPartsTable
+      Events:
+        GetHome:
+          Type: Api
+          Properties:
+            Path: /home
+            Method: get
+        MarkAllDone:
+          Type: Api
+          Properties:
+            Path: /home/mark-all-done
+            Method: post
+    Metadata:
+      SamResourceId: HomeFunction
+  NotificationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: functions/notification/index.handler
+      CodeUri: s3://aws-sam-cli-managed-default-samclisourcebucket-m5wcffukrowp/khatma-backend-dev/088eda162f0a20ddebbaa55eac4878dd
+      Description: Notifications - list, read, reminder settings
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: NotificationsTable
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: UserRemindersTable
+      Events:
+        ListNotifications:
+          Type: Api
+          Properties:
+            Path: /notifications
+            Method: get
+        ReadAll:
+          Type: Api
+          Properties:
+            Path: /notifications/read-all
+            Method: post
+        ReadOne:
+          Type: Api
+          Properties:
+            Path: /notifications/{notificationId}/read
+            Method: post
+        GetReminder:
+          Type: Api
+          Properties:
+            Path: /settings/reminder
+            Method: get
+        UpdateReminder:
+          Type: Api
+          Properties:
+            Path: /settings/reminder
+            Method: put
+    Metadata:
+      SamResourceId: NotificationFunction
+  ConfigFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: functions/config/index.handler
+      CodeUri: s3://aws-sam-cli-managed-default-samclisourcebucket-m5wcffukrowp/khatma-backend-dev/088eda162f0a20ddebbaa55eac4878dd
+      Description: App config - khatma types, banners
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: KhatmaTypesTable
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: BannersTable
+      Events:
+        GetConfig:
+          Type: Api
+          Properties:
+            Path: /config
+            Method: get
+            Auth:
+              Authorizer: NONE
+    Metadata:
+      SamResourceId: ConfigFunction
+  InvitationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: functions/invitation/index.handler
+      CodeUri: s3://aws-sam-cli-managed-default-samclisourcebucket-m5wcffukrowp/khatma-backend-dev/088eda162f0a20ddebbaa55eac4878dd
+      Description: Invitations - send, list, accept, decline
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: KhatmaInvitationsTable
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: KhatmasTable
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: UsersTable
+      Events:
+        SendInvite:
+          Type: Api
+          Properties:
+            Path: /khatmas/{khatmaId}/invite
+            Method: post
+        ListInvitations:
+          Type: Api
+          Properties:
+            Path: /invitations
+            Method: get
+        AcceptInvitation:
+          Type: Api
+          Properties:
+            Path: /invitations/{invitationId}/accept
+            Method: post
+        DeclineInvitation:
+          Type: Api
+          Properties:
+            Path: /invitations/{invitationId}/decline
+            Method: post
+    Metadata:
+      SamResourceId: InvitationFunction
+  AdminFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: functions/admin/index.handler
+      CodeUri: s3://aws-sam-cli-managed-default-samclisourcebucket-m5wcffukrowp/khatma-backend-dev/088eda162f0a20ddebbaa55eac4878dd
+      Description: Admin - banners, khatma types, notification types
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: BannersTable
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: KhatmaTypesTable
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: NotificationTypesTable
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: UsersTable
+      Events:
+        ListBanners:
+          Type: Api
+          Properties:
+            Path: /admin/banners
+            Method: get
+        CreateBanner:
+          Type: Api
+          Properties:
+            Path: /admin/banners
+            Method: post
+        UpdateBanner:
+          Type: Api
+          Properties:
+            Path: /admin/banners/{bannerId}
+            Method: put
+        DeleteBanner:
+          Type: Api
+          Properties:
+            Path: /admin/banners/{bannerId}
+            Method: delete
+        ListKhatmaTypes:
+          Type: Api
+          Properties:
+            Path: /admin/khatma-types
+            Method: get
+        CreateKhatmaType:
+          Type: Api
+          Properties:
+            Path: /admin/khatma-types
+            Method: post
+        UpdateKhatmaType:
+          Type: Api
+          Properties:
+            Path: /admin/khatma-types/{typeId}
+            Method: put
+        DeleteKhatmaType:
+          Type: Api
+          Properties:
+            Path: /admin/khatma-types/{typeId}
+            Method: delete
+        ListNotifTypes:
+          Type: Api
+          Properties:
+            Path: /admin/notification-types
+            Method: get
+        CreateNotifType:
+          Type: Api
+          Properties:
+            Path: /admin/notification-types
+            Method: post
+        UpdateNotifType:
+          Type: Api
+          Properties:
+            Path: /admin/notification-types/{typeId}
+            Method: put
+    Metadata:
+      SamResourceId: AdminFunction
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName:
+        Fn::Sub: khatma-users-${Environment}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: userId
+        AttributeType: S
+      KeySchema:
+      - AttributeName: userId
+        KeyType: HASH
+  KhatmasTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName:
+        Fn::Sub: khatma-khatmas-${Environment}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: khatmaId
+        AttributeType: S
+      - AttributeName: userId
+        AttributeType: S
+      - AttributeName: createdAt
+        AttributeType: S
+      - AttributeName: type
+        AttributeType: S
+      - AttributeName: status
+        AttributeType: S
+      KeySchema:
+      - AttributeName: khatmaId
+        KeyType: HASH
+      GlobalSecondaryIndexes:
+      - IndexName: userId-createdAt-index
+        KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: createdAt
+          KeyType: RANGE
+        Projection:
+          ProjectionType: ALL
+      - IndexName: type-status-index
+        KeySchema:
+        - AttributeName: type
+          KeyType: HASH
+        - AttributeName: status
+          KeyType: RANGE
+        Projection:
+          ProjectionType: ALL
+  KhatmaPartsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName:
+        Fn::Sub: khatma-parts-${Environment}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: khatmaId
+        AttributeType: S
+      - AttributeName: partNumber
+        AttributeType: N
+      - AttributeName: userId
+        AttributeType: S
+      KeySchema:
+      - AttributeName: khatmaId
+        KeyType: HASH
+      - AttributeName: partNumber
+        KeyType: RANGE
+      GlobalSecondaryIndexes:
+      - IndexName: userId-index
+        KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        Projection:
+          ProjectionType: ALL
+  KhatmaInvitationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName:
+        Fn::Sub: khatma-invitations-${Environment}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: khatmaId
+        AttributeType: S
+      - AttributeName: email
+        AttributeType: S
+      - AttributeName: status
+        AttributeType: S
+      KeySchema:
+      - AttributeName: khatmaId
+        KeyType: HASH
+      - AttributeName: email
+        KeyType: RANGE
+      GlobalSecondaryIndexes:
+      - IndexName: email-status-index
+        KeySchema:
+        - AttributeName: email
+          KeyType: HASH
+        - AttributeName: status
+          KeyType: RANGE
+        Projection:
+          ProjectionType: ALL
+  KhatmaTypesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName:
+        Fn::Sub: khatma-types-${Environment}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: typeId
+        AttributeType: S
+      KeySchema:
+      - AttributeName: typeId
+        KeyType: HASH
+  BannersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName:
+        Fn::Sub: khatma-banners-${Environment}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: bannerId
+        AttributeType: S
+      KeySchema:
+      - AttributeName: bannerId
+        KeyType: HASH
+  NotificationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName:
+        Fn::Sub: khatma-notifications-${Environment}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: userId
+        AttributeType: S
+      - AttributeName: createdAt
+        AttributeType: S
+      KeySchema:
+      - AttributeName: userId
+        KeyType: HASH
+      - AttributeName: createdAt
+        KeyType: RANGE
+  UserRemindersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName:
+        Fn::Sub: khatma-reminders-${Environment}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: userId
+        AttributeType: S
+      KeySchema:
+      - AttributeName: userId
+        KeyType: HASH
+  NotificationTypesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName:
+        Fn::Sub: khatma-notification-types-${Environment}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: typeId
+        AttributeType: S
+      KeySchema:
+      - AttributeName: typeId
+        KeyType: HASH
+  NotificationsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName:
+        Fn::Sub: khatma-notifications-queue-${Environment}
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 86400
+      RedrivePolicy:
+        deadLetterTargetArn:
+          Fn::GetAtt:
+          - NotificationsDLQ
+          - Arn
+        maxReceiveCount: 3
+  NotificationsDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName:
+        Fn::Sub: khatma-notifications-dlq-${Environment}
+      MessageRetentionPeriod: 1209600
+  InvitationsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName:
+        Fn::Sub: khatma-invitations-queue-${Environment}
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 86400
+      RedrivePolicy:
+        deadLetterTargetArn:
+          Fn::GetAtt:
+          - InvitationsDLQ
+          - Arn
+        maxReceiveCount: 3
+  InvitationsDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName:
+        Fn::Sub: khatma-invitations-dlq-${Environment}
+      MessageRetentionPeriod: 1209600
+  BannerImagesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        Fn::Sub: khatma-banner-images-${Environment}-${AWS::AccountId}
+      CorsConfiguration:
+        CorsRules:
+        - AllowedHeaders:
+          - '*'
+          AllowedMethods:
+          - GET
+          - PUT
+          AllowedOrigins:
+          - '*'
+          MaxAge: 3600
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+  BannerImagesBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket:
+        Ref: BannerImagesBucket
+      PolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal: '*'
+          Action: s3:GetObject
+          Resource:
+            Fn::Sub: ${BannerImagesBucket.Arn}/*
+  AdminDashboardBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        Fn::Sub: khatma-admin-dashboard-${Environment}-${AWS::AccountId}
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+  AdminDashboardBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket:
+        Ref: AdminDashboardBucket
+      PolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal: '*'
+          Action: s3:GetObject
+          Resource:
+            Fn::Sub: ${AdminDashboardBucket.Arn}/*
+  UploadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: functions/upload/index.handler
+      CodeUri: s3://aws-sam-cli-managed-default-samclisourcebucket-m5wcffukrowp/khatma-backend-dev/088eda162f0a20ddebbaa55eac4878dd
+      Description: Generate presigned URLs for image upload
+      Environment:
+        Variables:
+          BANNER_IMAGES_BUCKET:
+            Ref: BannerImagesBucket
+      Policies:
+      - S3CrudPolicy:
+          BucketName:
+            Ref: BannerImagesBucket
+      Events:
+        GetUploadUrl:
+          Type: Api
+          Properties:
+            Path: /admin/upload-url
+            Method: get
+    Metadata:
+      SamResourceId: UploadFunction
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL
+    Value:
+      Fn::Sub: https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/
+  HealthCheckUrl:
+    Description: Health check URL - open in browser to test
+    Value:
+      Fn::Sub: https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/health
+  BannerImagesBucketUrl:
+    Description: Banner images base URL
+    Value:
+      Fn::Sub: https://${BannerImagesBucket}.s3.amazonaws.com
+  AdminDashboardUrl:
+    Description: Admin Dashboard URL
+    Value:
+      Fn::GetAtt:
+      - AdminDashboardBucket
+      - WebsiteURL

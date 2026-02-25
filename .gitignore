@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# AWS SAM build
+.aws-sam/
+
+# Environment variables (SECRETS - NEVER commit!)
+.env
+.env.local
+.env.production
+
+# Firebase Service Account Key (SECRET!)
+firebase-service-account.json
+*-service-account*.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Coverage
+coverage/
+
+# SAM config with secrets
+samconfig.toml
+
+firebase-service-account.json

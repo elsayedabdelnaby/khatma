@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Khatma Admin Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Login Screen -->
+<div id="loginScreen" class="login-screen">
+  <div class="login-card">
+    <div class="login-logo">
+      <i class="fas fa-book-quran"></i>
+    </div>
+    <h1>Khatma Admin</h1>
+    <p class="login-subtitle">Sign in to manage your Khatma app</p>
+
+    <form onsubmit="event.preventDefault(); doLogin();" autocomplete="on">
+      <div class="form-group">
+        <label for="apiUrlInput">API URL</label>
+        <input type="text" id="apiUrlInput" placeholder="https://xxx.execute-api.us-east-1.amazonaws.com/Prod">
+      </div>
+      <div class="form-group">
+        <label for="emailInput">Email</label>
+        <input type="email" id="emailInput" placeholder="admin@khatma.app" autocomplete="email">
+      </div>
+      <div class="form-group">
+        <label for="passwordInput">Password</label>
+        <input type="password" id="passwordInput" placeholder="••••••••" autocomplete="current-password">
+      </div>
+
+      <button type="submit" class="btn btn-primary btn-full" id="loginBtn">
+        <i class="fas fa-sign-in-alt"></i> Sign In
+      </button>
+    </form>
+
+    <div id="loginError" class="alert alert-error" style="display:none"></div>
+    <div id="loginLoading" class="login-loading" style="display:none">
+      <i class="fas fa-spinner fa-spin"></i> Signing in...
+    </div>
+  </div>
+</div>
+
+<!-- Main App -->
+<div id="mainApp" style="display:none">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <i class="fas fa-book-quran"></i>
+      <span>Khatma Admin</span>
+    </div>
+    <nav class="sidebar-nav">
+      <a href="#" class="nav-item active" data-section="banners">
+        <i class="fas fa-images"></i> Banners
+      </a>
+      <a href="#" class="nav-item" data-section="khatmaTypes">
+        <i class="fas fa-layer-group"></i> Khatma Types
+      </a>
+      <a href="#" class="nav-item" data-section="notifTypes">
+        <i class="fas fa-bell"></i> Notification Types
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="user-info" id="userInfo" style="display:none">
+        <img id="userPhoto" src="" alt="" class="user-avatar">
+        <span id="userName" class="user-name"></span>
+      </div>
+      <button class="btn btn-ghost btn-full" onclick="doLogout()">
+        <i class="fas fa-sign-out-alt"></i> Logout
+      </button>
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="main-content">
+    <!-- Top Bar -->
+    <header class="topbar">
+      <button class="mobile-menu-btn" onclick="toggleSidebar()">
+        <i class="fas fa-bars"></i>
+      </button>
+      <h2 id="pageTitle">Banners</h2>
+      <div class="topbar-actions">
+        <span class="env-badge" id="envBadge">DEV</span>
+      </div>
+    </header>
+
+    <!-- Content Area -->
+    <div class="content-area">
+
+      <!-- ==================== BANNERS SECTION ==================== -->
+      <section id="bannersSection" class="section active">
+        <div class="section-header">
+          <h3>Manage Banners</h3>
+          <button class="btn btn-primary" onclick="showBannerModal()">
+            <i class="fas fa-plus"></i> Add Banner
+          </button>
+        </div>
+        <div id="bannersGrid" class="cards-grid">
+          <div class="loading-state"><i class="fas fa-spinner fa-spin"></i> Loading banners...</div>
+        </div>
+      </section>
+
+      <!-- ==================== KHATMA TYPES SECTION ==================== -->
+      <section id="khatmaTypesSection" class="section">
+        <div class="section-header">
+          <h3>Manage Khatma Types</h3>
+          <button class="btn btn-primary" onclick="showKhatmaTypeModal()">
+            <i class="fas fa-plus"></i> Add Type
+          </button>
+        </div>
+        <div id="khatmaTypesGrid" class="cards-grid">
+          <div class="loading-state"><i class="fas fa-spinner fa-spin"></i> Loading types...</div>
+        </div>
+      </section>
+
+      <!-- ==================== NOTIFICATION TYPES SECTION ==================== -->
+      <section id="notifTypesSection" class="section">
+        <div class="section-header">
+          <h3>Manage Notification Types</h3>
+          <button class="btn btn-primary" onclick="showNotifTypeModal()">
+            <i class="fas fa-plus"></i> Add Type
+          </button>
+        </div>
+        <div id="notifTypesGrid" class="cards-grid">
+          <div class="loading-state"><i class="fas fa-spinner fa-spin"></i> Loading notification types...</div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<!-- ==================== BANNER MODAL ==================== -->
+<div id="bannerModal" class="modal">
+  <div class="modal-overlay" onclick="closeModal('bannerModal')"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 id="bannerModalTitle">Add Banner</h3>
+      <button class="modal-close" onclick="closeModal('bannerModal')"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="bannerEditId">
+
+      <!-- Image Upload -->
+      <div class="form-group">
+        <label>Banner Image</label>
+        <div class="image-upload-area" id="bannerUploadArea">
+          <img id="bannerPreview" src="" style="display:none">
+          <div id="bannerUploadPlaceholder" class="upload-placeholder">
+            <i class="fas fa-cloud-upload-alt"></i>
+            <p>Click or drag image here</p>
+            <span>JPG, PNG up to 2MB</span>
+          </div>
+          <input type="file" id="bannerFileInput" accept="image/*" onchange="handleBannerImageSelect(event)" style="display:none">
+        </div>
+        <input type="hidden" id="bannerImageUrl">
+        <div id="uploadProgress" class="progress-bar" style="display:none">
+          <div class="progress-fill"></div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="bannerTitleAr">Title (Arabic)</label>
+          <input type="text" id="bannerTitleAr" dir="rtl" placeholder="العنوان بالعربي">
+        </div>
+        <div class="form-group">
+          <label for="bannerTitleEn">Title (English)</label>
+          <input type="text" id="bannerTitleEn" placeholder="Title in English">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="bannerTitleUr">Title (Urdu)</label>
+          <input type="text" id="bannerTitleUr" dir="rtl" placeholder="اردو میں عنوان">
+        </div>
+        <div class="form-group">
+          <label for="bannerTitleHi">Title (Hindi)</label>
+          <input type="text" id="bannerTitleHi" placeholder="हिंदी में शीर्षक">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="bannerLinkUrl">Link URL (optional)</label>
+          <input type="text" id="bannerLinkUrl" placeholder="https://...">
+        </div>
+        <div class="form-group">
+          <label for="bannerSortOrder">Sort Order</label>
+          <input type="number" id="bannerSortOrder" value="0">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="bannerStartDate">Start Date</label>
+          <input type="date" id="bannerStartDate">
+        </div>
+        <div class="form-group">
+          <label for="bannerEndDate">End Date</label>
+          <input type="date" id="bannerEndDate">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="toggle-label">
+          <input type="checkbox" id="bannerIsActive" checked>
+          <span class="toggle-switch"></span>
+          Active
+        </label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('bannerModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveBanner()" id="saveBannerBtn">
+        <i class="fas fa-save"></i> Save Banner
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== KHATMA TYPE MODAL ==================== -->
+<div id="khatmaTypeModal" class="modal">
+  <div class="modal-overlay" onclick="closeModal('khatmaTypeModal')"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 id="khatmaTypeModalTitle">Add Khatma Type</h3>
+      <button class="modal-close" onclick="closeModal('khatmaTypeModal')"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="khatmaTypeEditId">
+      <div class="form-row">
+        <div class="form-group">
+          <label for="ktNameAr">Name (Arabic)</label>
+          <input type="text" id="ktNameAr" dir="rtl" placeholder="الاسم بالعربي">
+        </div>
+        <div class="form-group">
+          <label for="ktNameEn">Name (English)</label>
+          <input type="text" id="ktNameEn" placeholder="Name in English">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="ktNameUr">Name (Urdu)</label>
+          <input type="text" id="ktNameUr" dir="rtl" placeholder="اردو میں نام">
+        </div>
+        <div class="form-group">
+          <label for="ktNameHi">Name (Hindi)</label>
+          <input type="text" id="ktNameHi" placeholder="हिंदी में नाम">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="ktDescAr">Description (Arabic)</label>
+          <textarea id="ktDescAr" dir="rtl" rows="2" placeholder="الوصف بالعربي"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="ktDescEn">Description (English)</label>
+          <textarea id="ktDescEn" rows="2" placeholder="Description in English"></textarea>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="ktIcon">Icon (emoji or name)</label>
+          <input type="text" id="ktIcon" placeholder="🤲 or prayer">
+        </div>
+        <div class="form-group">
+          <label for="ktSortOrder">Sort Order</label>
+          <input type="number" id="ktSortOrder" value="0">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="toggle-label">
+          <input type="checkbox" id="ktIsActive" checked>
+          <span class="toggle-switch"></span>
+          Active
+        </label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('khatmaTypeModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveKhatmaType()" id="saveKtBtn">
+        <i class="fas fa-save"></i> Save Type
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== NOTIFICATION TYPE MODAL ==================== -->
+<div id="notifTypeModal" class="modal">
+  <div class="modal-overlay" onclick="closeModal('notifTypeModal')"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 id="notifTypeModalTitle">Add Notification Type</h3>
+      <button class="modal-close" onclick="closeModal('notifTypeModal')"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="notifTypeEditId">
+      <div class="form-row">
+        <div class="form-group">
+          <label for="ntType">Type</label>
+          <select id="ntType">
+            <option value="motivational">Motivational</option>
+            <option value="progress">Progress</option>
+            <option value="completion">Completion</option>
+            <option value="welcome">Welcome</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="ntSubType">SubType</label>
+          <select id="ntSubType">
+            <option value="">-- None --</option>
+            <option value="farah">Farah (فرح)</option>
+            <option value="ramadan">Ramadan (رمضان)</option>
+            <option value="shifa">Shifa (شفاء)</option>
+            <option value="general">General (عام)</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="ntTemplateAr">Template (Arabic)</label>
+          <textarea id="ntTemplateAr" dir="rtl" rows="2" placeholder="نص الإشعار بالعربي"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="ntTemplateEn">Template (English)</label>
+          <textarea id="ntTemplateEn" rows="2" placeholder="Notification text in English"></textarea>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="ntTemplateUr">Template (Urdu)</label>
+          <textarea id="ntTemplateUr" dir="rtl" rows="2" placeholder="اردو میں نوٹیفکیشن"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="ntTemplateHi">Template (Hindi)</label>
+          <textarea id="ntTemplateHi" rows="2" placeholder="हिंदी में नोटिफिकेशन"></textarea>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="toggle-label">
+          <input type="checkbox" id="ntIsActive" checked>
+          <span class="toggle-switch"></span>
+          Active
+        </label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('notifTypeModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveNotifType()" id="saveNtBtn">
+        <i class="fas fa-save"></i> Save Type
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="toast"></div>
+
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+
+<script src="app.js"></script>
+</body>
+</html>
