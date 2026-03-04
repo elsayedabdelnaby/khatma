@@ -15,7 +15,7 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
   Khatma App Backend
-  Quran Completion App - Serverless Architecture
+  Quran Completion App - Serverless Architecture v2
 
 # ============================================================
 # 🌍 Parameters - متغيرات بتتغير حسب البيئة (dev/prod)
@@ -72,6 +72,7 @@ Globals:
       AllowOrigin: "'*'"
     Auth:
       DefaultAuthorizer: FirebaseAuthorizer
+      AddDefaultAuthorizerToCorsPreflight: false
       Authorizers:
         FirebaseAuthorizer:
           FunctionArn: !GetAtt AuthorizerFunction.Arn
@@ -80,6 +81,29 @@ Globals:
 # 🏗️ Resources - كل الحاجات اللي AWS هينشئها
 # ============================================================
 Resources:
+
+  # ==========================================================
+  # 🌐 Gateway Responses - CORS headers on API Gateway errors
+  # ==========================================================
+  GatewayResponseDefault4XX:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,Authorization,Accept-Language'"
+        gatewayresponse.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+      ResponseType: DEFAULT_4XX
+      RestApiId: !Ref ServerlessRestApi
+
+  GatewayResponseDefault5XX:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,Authorization,Accept-Language'"
+        gatewayresponse.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+      ResponseType: DEFAULT_5XX
+      RestApiId: !Ref ServerlessRestApi
 
   # ==========================================================
   # 🔐 LAMBDA: Firebase Authorizer (حارس الباب)
@@ -113,6 +137,13 @@ Resources:
       CodeUri: ./
       Description: Health check endpoint - returns OK if everything is working
       Events:
+        Root:
+          Type: Api
+          Properties:
+            Path: /
+            Method: get
+            Auth:
+              Authorizer: NONE
         HealthCheck:
           Type: Api
           Properties:

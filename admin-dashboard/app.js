@@ -144,11 +144,15 @@ function showLoginError(msg) {
 // ============================================================
 // Auto-login: check for existing Firebase session
 // ============================================================
+// Default API URL (current deployed endpoint)
+const DEFAULT_API_URL = 'https://yckut56u69.execute-api.us-east-1.amazonaws.com/Prod';
+
 auth.onAuthStateChanged(async (user) => {
   const savedUrl = localStorage.getItem('khatma_api_url');
   const savedEmail = localStorage.getItem('khatma_admin_email');
 
-  if (savedUrl) document.getElementById('apiUrlInput').value = savedUrl;
+  const apiInput = document.getElementById('apiUrlInput');
+  apiInput.value = savedUrl || DEFAULT_API_URL;
   if (savedEmail) document.getElementById('emailInput').value = savedEmail;
 
   if (user && savedUrl) {

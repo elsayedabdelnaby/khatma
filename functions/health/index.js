@@ -39,22 +39,25 @@ const { success } = require('../../shared/response');
  * → Returns: { success: true, data: { status: "OK", ... } }
  */
 exports.handler = async (event) => {
-  // ============================================================
-  // 📋 شرح الكود:
-  // 1. بنجهز object فيه معلومات عن حالة النظام
-  // 2. بنرجعه كـ success response
-  // ============================================================
+  const path = (event.path || event.rawPath || '').replace(/^\/Prod/, '') || '/';
 
+  // Root path: short welcome (avoids "Missing Authentication Token" when visiting base URL)
+  if (path === '/' || path === '') {
+    return success({
+      message: 'Khatma API',
+      health: '/Prod/health',
+      docs: 'Use /Prod/health for health check. Admin and app endpoints require Firebase auth.',
+    });
+  }
+
+  // /health: full health check
   const healthData = {
-    status: 'OK',                              // النظام شغال
-    timestamp: new Date().toISOString(),        // الوقت الحالي
-    environment: process.env.ENVIRONMENT || 'unknown', // البيئة (dev/prod)
-    version: '1.0.0',                          // نسخة الكود
-    service: 'khatma-backend',                 // اسم الخدمة
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    environment: process.env.ENVIRONMENT || 'unknown',
+    version: '1.0.0',
+    service: 'khatma-backend',
   };
-
-  // success() هي الدالة اللي عملناها في shared/response.js
-  // بتحول الـ object لـ JSON وتضيف الـ headers المطلوبة
   return success(healthData);
 };
 
