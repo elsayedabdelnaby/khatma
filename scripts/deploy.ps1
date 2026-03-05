@@ -53,7 +53,7 @@ $dashboardBucket = ($stackOutputs | Where-Object { $_.OutputKey -eq "AdminDashbo
 $apiUrl = ($stackOutputs | Where-Object { $_.OutputKey -eq "ApiUrl" })
 
 $accountId = (aws sts get-caller-identity --query Account --output text)
-$bucketName = "khatma-admin-dashboard-dev-$accountId"
+$bucketName = "khatma-admin-app-dev-$accountId"
 
 aws s3 sync admin-dashboard/ "s3://$bucketName" --delete
 if ($LASTEXITCODE -ne 0) {

@@ -73,7 +73,7 @@ async function listNotifications(event, userId) {
 // ============================================================
 async function markRead(event, userId) {
   const parts = event.path.split('/');
-  const createdAt = decodeURIComponent(parts[2]);
+  const createdAt = decodeURIComponent(event.pathParameters?.notificationId || parts[2]);
 
   await dynamodb.send(new UpdateCommand({
     TableName: process.env.NOTIFICATIONS_TABLE,
@@ -92,7 +92,6 @@ async function markAllRead(event, userId) {
   const result = await dynamodb.send(new QueryCommand({
     TableName: process.env.NOTIFICATIONS_TABLE,
     KeyConditionExpression: 'userId = :uid',
-    ExpressionAttributeValues: { ':uid': userId },
     FilterExpression: 'isRead = :false',
     ExpressionAttributeValues: { ':uid': userId, ':false': false },
   }));

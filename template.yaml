@@ -69,6 +69,8 @@ Globals:
     Cors:
       AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
       AllowHeaders: "'Content-Type,Authorization,Accept-Language'"
+      # ⚠️ SECURITY: Change AllowOrigin to your domain in prod
+      # e.g., "'https://admin.yourdomain.com'"
       AllowOrigin: "'*'"
     Auth:
       DefaultAuthorizer: FirebaseAuthorizer
@@ -76,6 +78,12 @@ Globals:
       Authorizers:
         FirebaseAuthorizer:
           FunctionArn: !GetAtt AuthorizerFunction.Arn
+
+# ============================================================
+# 🔀 Conditions
+# ============================================================
+Conditions:
+  IsProd: !Equals [!Ref Environment, prod]
 
 # ============================================================
 # 🏗️ Resources - كل الحاجات اللي AWS هينشئها
@@ -105,6 +113,27 @@ Resources:
       ResponseType: DEFAULT_5XX
       RestApiId: !Ref ServerlessRestApi
 
+  # 401/403 from Lambda authorizer use these types; they need CORS too
+  GatewayResponseUnauthorized:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,Authorization,Accept-Language'"
+        gatewayresponse.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+      ResponseType: UNAUTHORIZED
+      RestApiId: !Ref ServerlessRestApi
+
+  GatewayResponseAccessDenied:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,Authorization,Accept-Language'"
+        gatewayresponse.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+      ResponseType: ACCESS_DENIED
+      RestApiId: !Ref ServerlessRestApi
+
   # ==========================================================
   # 🔐 LAMBDA: Firebase Authorizer (حارس الباب)
   # ==========================================================
@@ -120,6 +149,9 @@ Resources:
       Description: Firebase Token Authorizer - verifies every request
       Timeout: 10
       MemorySize: 128
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Sub /aws/lambda/khatma-authorizer-${Environment}
       Policies:
         - SSMParameterReadPolicy:
             ParameterName: !Ref FirebaseSSMParam
@@ -136,6 +168,9 @@ Resources:
       Handler: functions/health/index.handler
       CodeUri: ./
       Description: Health check endpoint - returns OK if everything is working
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Sub /aws/lambda/khatma-health-${Environment}
       Events:
         Root:
           Type: Api
@@ -163,6 +198,9 @@ Resources:
       Handler: functions/user/index.handler
       CodeUri: ./
       Description: User management - sync, get profile, update profile
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Sub /aws/lambda/khatma-user-${Environment}
       Policies:
         # الصلاحيات: يقدر يقرأ ويكتب في Users Table بس
         - DynamoDBCrudPolicy:
@@ -195,6 +233,9 @@ Resources:
       Handler: functions/khatma/index.handler
       CodeUri: ./
       Description: Khatma CRUD - create, list, details, reserve parts, complete
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Sub /aws/lambda/khatma-khatma-${Environment}
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref KhatmasTable
@@ -202,6 +243,9 @@ Resources:
             TableName: !Ref KhatmaPartsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref UsersTable
+        # SQS: permission to enqueue notification messages
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt NotificationsQueue.QueueName
       Events:
         CreateKhatma:
           Type: Api
@@ -243,8 +287,12 @@ Resources:
       Handler: functions/home/index.handler
       CodeUri: ./
       Description: Home page data - banners, my chapters summary
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Sub /aws/lambda/khatma-home-${Environment}
       Policies:
-        - DynamoDBCrudPolicy:
+        # Read-only: Home page only reads data, never writes
+        - DynamoDBReadPolicy:
             TableName: !Ref BannersTable
         - DynamoDBCrudPolicy:
             TableName: !Ref KhatmasTable
@@ -271,6 +319,9 @@ Resources:
       Handler: functions/notification/index.handler
       CodeUri: ./
       Description: Notifications - list, read, reminder settings
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Sub /aws/lambda/khatma-notification-${Environment}
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref NotificationsTable
@@ -312,10 +363,14 @@ Resources:
       Handler: functions/config/index.handler
       CodeUri: ./
       Description: App config - khatma types, banners
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Sub /aws/lambda/khatma-config-${Environment}
       Policies:
-        - DynamoDBCrudPolicy:
+        # Read-only: Config endpoint is GET only, never writes
+        - DynamoDBReadPolicy:
             TableName: !Ref KhatmaTypesTable
-        - DynamoDBCrudPolicy:
+        - DynamoDBReadPolicy:
             TableName: !Ref BannersTable
       Events:
         GetConfig:
@@ -335,6 +390,9 @@ Resources:
       Handler: functions/invitation/index.handler
       CodeUri: ./
       Description: Invitations - send, list, accept, decline
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Sub /aws/lambda/khatma-invitation-${Environment}
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref KhatmaInvitationsTable
@@ -342,6 +400,9 @@ Resources:
             TableName: !Ref KhatmasTable
         - DynamoDBCrudPolicy:
             TableName: !Ref UsersTable
+        # SQS: permission to enqueue invitation notification messages
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt InvitationsQueue.QueueName
       Events:
         SendInvite:
           Type: Api
@@ -373,6 +434,9 @@ Resources:
       Handler: functions/admin/index.handler
       CodeUri: ./
       Description: Admin - banners, khatma types, notification types
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Sub /aws/lambda/khatma-admin-${Environment}
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref BannersTable
@@ -446,6 +510,8 @@ Resources:
   # ==========================================================
   UsersTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain            # Prevent accidental data loss on stack delete
+    UpdateReplacePolicy: Retain
     Properties:
       TableName: !Sub khatma-users-${Environment}
       BillingMode: PAY_PER_REQUEST    # بتدفع بس لما بتستخدم
@@ -461,6 +527,8 @@ Resources:
   # ==========================================================
   KhatmasTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TableName: !Sub khatma-khatmas-${Environment}
       BillingMode: PAY_PER_REQUEST
@@ -503,6 +571,8 @@ Resources:
   # ==========================================================
   KhatmaPartsTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TableName: !Sub khatma-parts-${Environment}
       BillingMode: PAY_PER_REQUEST
@@ -532,6 +602,8 @@ Resources:
   # ==========================================================
   KhatmaInvitationsTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TableName: !Sub khatma-invitations-${Environment}
       BillingMode: PAY_PER_REQUEST
@@ -563,6 +635,8 @@ Resources:
   # ==========================================================
   KhatmaTypesTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TableName: !Sub khatma-types-${Environment}
       BillingMode: PAY_PER_REQUEST
@@ -578,6 +652,8 @@ Resources:
   # ==========================================================
   BannersTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TableName: !Sub khatma-banners-${Environment}
       BillingMode: PAY_PER_REQUEST
@@ -593,6 +669,8 @@ Resources:
   # ==========================================================
   NotificationsTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TableName: !Sub khatma-notifications-${Environment}
       BillingMode: PAY_PER_REQUEST
@@ -612,6 +690,8 @@ Resources:
   # ==========================================================
   UserRemindersTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TableName: !Sub khatma-reminders-${Environment}
       BillingMode: PAY_PER_REQUEST
@@ -627,6 +707,8 @@ Resources:
   # ==========================================================
   NotificationTypesTable:
     Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TableName: !Sub khatma-notification-types-${Environment}
       BillingMode: PAY_PER_REQUEST
@@ -646,7 +728,7 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: !Sub khatma-notifications-queue-${Environment}
-      VisibilityTimeout: 60          # الرسالة تختفي 60 ثانية أثناء المعالجة
+      VisibilityTimeout: 180         # Must be >= 6x Lambda timeout (30s * 6 = 180s)
       MessageRetentionPeriod: 86400  # الرسائل تتحفظ يوم واحد
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt NotificationsDLQ.Arn
@@ -666,7 +748,7 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: !Sub khatma-invitations-queue-${Environment}
-      VisibilityTimeout: 60
+      VisibilityTimeout: 180         # Must be >= 6x Lambda timeout (30s * 6 = 180s)
       MessageRetentionPeriod: 86400
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt InvitationsDLQ.Arn
@@ -710,19 +792,57 @@ Resources:
 
   # ==========================================================
   # 📦 S3 BUCKET: Admin Dashboard (Static Website)
+  # Served via CloudFront with OAC - NOT publicly accessible directly
   # ==========================================================
   AdminDashboardBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub khatma-admin-dashboard-${Environment}-${AWS::AccountId}
-      WebsiteConfiguration:
-        IndexDocument: index.html
-        ErrorDocument: index.html
+      # Unique name so ResourceExistenceCheck passes (old bucket name may still exist)
+      BucketName: !Sub khatma-admin-app-${Environment}-${AWS::AccountId}
+      # No WebsiteConfiguration - CloudFront serves the SPA, not S3 website hosting
       PublicAccessBlockConfiguration:
-        BlockPublicAcls: false
-        BlockPublicPolicy: false
-        IgnorePublicAcls: false
-        RestrictPublicBuckets: false
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # CloudFront Origin Access Control - only CloudFront can read the bucket
+  AdminDashboardOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub khatma-admin-oac-${Environment}
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # CloudFront Distribution - serves the admin SPA securely
+  AdminDashboardDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        Origins:
+          - Id: AdminDashboardS3Origin
+            DomainName: !GetAtt AdminDashboardBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ''   # empty when using OAC
+            OriginAccessControlId: !GetAtt AdminDashboardOAC.Id
+        DefaultCacheBehavior:
+          TargetOriginId: AdminDashboardS3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # CachingOptimized managed policy
+          AllowedMethods: [GET, HEAD, OPTIONS]
+        # SPA routing: return index.html for 403/404 (React Router support)
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        PriceClass: PriceClass_100  # US/Europe only - cheapest
 
   AdminDashboardBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -730,10 +850,16 @@ Resources:
       Bucket: !Ref AdminDashboardBucket
       PolicyDocument:
         Statement:
+          # Only allow CloudFront (via OAC) to read objects - no public access
           - Effect: Allow
-            Principal: '*'
+            Principal:
+              Service: cloudfront.amazonaws.com
             Action: 's3:GetObject'
             Resource: !Sub ${AdminDashboardBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${AdminDashboardDistribution}
+
 
   # ==========================================================
   # ⚡ LAMBDA: Upload URL Generator
@@ -743,11 +869,16 @@ Resources:
     Properties:
       Handler: functions/upload/index.handler
       CodeUri: ./
-      Description: Generate presigned URLs for image upload
+      Description: Generate presigned URLs for image upload (admin only)
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Sub /aws/lambda/khatma-upload-${Environment}
       Environment:
         Variables:
           BANNER_IMAGES_BUCKET: !Ref BannerImagesBucket
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref UsersTable
         - S3CrudPolicy:
             BucketName: !Ref BannerImagesBucket
       Events:
@@ -757,9 +888,81 @@ Resources:
             Path: /admin/upload-url
             Method: get
 
-# ============================================================
-# 📤 Outputs - المعلومات اللي بتطلع بعد الـ Deploy
-# ============================================================
+  # ==========================================================
+  # ⚡ LAMBDA FUNCTION #10: Notification Worker (SQS Consumer)
+  # ==========================================================
+  # Processes messages from NotificationsQueue and sends
+  # push notifications via Firebase FCM
+  # ==========================================================
+  NotificationWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: functions/notification-worker/index.handler
+      CodeUri: ./
+      Description: SQS consumer - sends Firebase push notifications
+      Timeout: 30
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Sub /aws/lambda/khatma-notif-worker-${Environment}
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref NotificationsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref NotificationTypesTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UsersTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref NotificationsTable   # needs write to mark as sent
+        - SSMParameterReadPolicy:
+            ParameterName: !Ref FirebaseSSMParam
+        - SQSPollerPolicy:
+            QueueName: !GetAtt NotificationsQueue.QueueName
+      Events:
+        NotificationQueueTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt NotificationsQueue.Arn
+            BatchSize: 10
+            FunctionResponseTypes:
+              - ReportBatchItemFailures   # partial batch failure support
+
+  # ==========================================================
+  # ⚡ LAMBDA FUNCTION #11: Invitation Worker (SQS Consumer)
+  # ==========================================================
+  # Processes messages from InvitationsQueue and sends
+  # invitation push notifications via Firebase FCM
+  # ==========================================================
+  InvitationWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: functions/invitation-worker/index.handler
+      CodeUri: ./
+      Description: SQS consumer - sends Firebase invitation notifications
+      Timeout: 30
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Sub /aws/lambda/khatma-invite-worker-${Environment}
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref KhatmaInvitationsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref UsersTable
+        - SSMParameterReadPolicy:
+            ParameterName: !Ref FirebaseSSMParam
+        - SQSPollerPolicy:
+            QueueName: !GetAtt InvitationsQueue.QueueName
+      Events:
+        InvitationQueueTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt InvitationsQueue.Arn
+            BatchSize: 10
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+
+  # LogGroups are managed via LoggingConfig inside each Lambda (SAM-native approach)
+  # This avoids EarlyValidation failures from !Sub ${FunctionRef} log group names
+
 Outputs:
   ApiUrl:
     Description: API Gateway endpoint URL
@@ -774,6 +977,5 @@ Outputs:
     Value: !Sub https://${BannerImagesBucket}.s3.amazonaws.com
 
   AdminDashboardUrl:
-    Description: Admin Dashboard URL
-    Value: !GetAtt AdminDashboardBucket.WebsiteURL
-
+    Description: Admin Dashboard URL (served via CloudFront - not direct S3)
+    Value: !Sub https://${AdminDashboardDistribution.DomainName}

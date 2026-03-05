@@ -48,13 +48,6 @@ async function getHome(event, userId) {
   // ============================================================
   // 1. جلب البانرات النشطة
   // ============================================================
-  const bannersResult = await dynamodb.send(new QueryCommand({
-    TableName: process.env.BANNERS_TABLE,
-    // Scan لأن البانرات قليلة (5-10 بانرات)
-    // مفيش GSI - بنفلتر بعد الجلب
-  }).catch(() => ({ Items: [] })));
-
-  // Banners table doesn't have a GSI, so we'll scan it
   const { ScanCommand } = require('@aws-sdk/lib-dynamodb');
   const bannersData = await dynamodb.send(new ScanCommand({
     TableName: process.env.BANNERS_TABLE,
@@ -129,17 +122,27 @@ async function markAllDone(event, userId) {
   let markedCount = 0;
 
   for (const part of myParts) {
-    await dynamodb.send(new UpdateCommand({
-      TableName: process.env.KHATMA_PARTS_TABLE,
-      Key: { khatmaId: part.khatmaId, partNumber: part.partNumber },
-      UpdateExpression: 'SET #status = :completed, completedAt = :now',
-      ExpressionAttributeNames: { '#status': 'status' },
-      ExpressionAttributeValues: { ':completed': 'completed', ':now': now },
-    }));
-    markedCount++;
+    try {
+      await dynamodb.send(new UpdateCommand({
+        TableName: process.env.KHATMA_PARTS_TABLE,
+        Key: { khatmaId: part.khatmaId, partNumber: part.partNumber },
+        UpdateExpression: 'SET #status = :completed, completedAt = :now',
+        ConditionExpression: '#status = :reserved AND userId = :uid',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':completed': 'completed',
+          ':reserved': 'reserved',
+          ':uid': userId,
+          ':now': now,
+        },
+      }));
+      markedCount++;
+    } catch (err) {
+      if (err.name !== 'ConditionalCheckFailedException') throw err;
+    }
   }
 
-  // تحديث الختمات المتأثرة
+  // تحديث الختمات المتأثرة — conditional update so we never decrease completedParts
   const affectedKhatmas = [...new Set(myParts.map(p => p.khatmaId))];
   for (const khatmaId of affectedKhatmas) {
     const partsResult = await dynamodb.send(new QueryCommand({
@@ -151,7 +154,10 @@ async function markAllDone(event, userId) {
     const completedCount = (partsResult.Items || [])
       .filter(p => p.status === 'completed').length;
 
-    const updateData = { ':count': completedCount, ':now': now };
+    const updateData = {
+      ':count': completedCount,
+      ':now': now,
+    };
     let updateExpr = 'SET completedParts = :count, updatedAt = :now';
 
     if (completedCount >= 30) {
@@ -159,13 +165,18 @@ async function markAllDone(event, userId) {
       updateData[':completed'] = 'completed';
     }
 
-    await dynamodb.send(new UpdateCommand({
-      TableName: process.env.KHATMAS_TABLE,
-      Key: { khatmaId },
-      UpdateExpression: updateExpr,
-      ExpressionAttributeValues: updateData,
-      ExpressionAttributeNames: { '#status': 'status' },
-    }));
+    try {
+      await dynamodb.send(new UpdateCommand({
+        TableName: process.env.KHATMAS_TABLE,
+        Key: { khatmaId },
+        UpdateExpression: updateExpr,
+        ConditionExpression: 'completedParts < :count OR attribute_not_exists(completedParts)',
+        ExpressionAttributeValues: updateData,
+        ExpressionAttributeNames: { '#status': 'status' },
+      }));
+    } catch (err) {
+      if (err.name !== 'ConditionalCheckFailedException') throw err;
+    }
   }
 
   return success({ markedCount }, 200, 'All chapters marked as done');

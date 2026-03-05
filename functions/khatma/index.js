@@ -73,7 +73,7 @@ exports.handler = async (event) => {
 
     // POST /khatmas/{khatmaId}/parts/add-extra
     if (method === 'POST' && path.endsWith('/parts/add-extra')) {
-      return await reserveParts(event, userId);
+      return await addExtraParts(event, userId);
     }
 
     return error(404, 'NOT_FOUND', `Route not found: ${method} ${path}`);
@@ -359,6 +359,44 @@ async function getKhatmaDetails(event, userId) {
 //   2. لو الجزء اتحجز بالفعل → يضيفه في الـ failed list
 //   3. ده بيحمي من Race Condition (لو 2 حجزوا نفس الجزء)
 // ============================================================
+
+// ============================================================
+// 📌 POST /khatmas/{khatmaId}/parts/add-extra - إضافة أجزاء إضافية
+// ============================================================
+// Same as reserve but only allowed after user has completed all
+// their current reserved parts in this khatma (no reserved left).
+// ============================================================
+async function addExtraParts(event, userId) {
+  const khatmaId = event.pathParameters?.khatmaId
+    || event.path.split('/')[2];
+
+  // Check that user has no parts still reserved (all must be completed first)
+  const partsResult = await dynamodb.send(new QueryCommand({
+    TableName: process.env.KHATMA_PARTS_TABLE,
+    IndexName: 'userId-index',
+    KeyConditionExpression: 'userId = :uid',
+    FilterExpression: 'khatmaId = :kid AND #status = :reserved',
+    ExpressionAttributeNames: { '#status': 'status' },
+    ExpressionAttributeValues: {
+      ':uid': userId,
+      ':kid': khatmaId,
+      ':reserved': 'reserved',
+    },
+  }));
+
+  const stillReserved = partsResult.Items || [];
+  if (stillReserved.length > 0) {
+    const partNums = stillReserved.map((p) => p.partNumber).sort((a, b) => a - b);
+    return error(
+      400,
+      'COMPLETE_PARTS_FIRST',
+      `Complete your reserved parts before adding extra parts. Reserved: ${partNums.join(', ')}`
+    );
+  }
+
+  return await reserveParts(event, userId);
+}
+
 async function reserveParts(event, userId) {
   const khatmaId = event.pathParameters?.khatmaId
     || event.path.split('/')[2];

@@ -92,7 +92,7 @@ async function doLogin() {
 
 async function syncUserWithBackend(user) {
   try {
-    await api('/user/sync', 'POST', {
+    await api('/auth/sync', 'POST', {
       email: user.email || '',
       displayName: user.displayName || 'Admin',
       photoUrl: user.photoURL || '',
