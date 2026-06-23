@@ -163,7 +163,7 @@ You should get back the user data 🎉
 
 ### Issue: "Unable to upload artifact"
 ```
-Solution: Make sure AWS CLI is properly configured
+Solution: Make sure AWS CLI is properly configured 
 aws sts get-caller-identity
 ```
 

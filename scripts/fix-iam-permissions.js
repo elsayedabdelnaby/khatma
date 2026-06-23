@@ -12,9 +12,9 @@ const ACCOUNT = '085096851574';
 const SSM_PARAM = '/khatma/firebase-service-account';
 
 const ROLES = [
-  'khatma-backend-dev-AuthorizerFunctionRole-1zpO7GdeGleZ',
-  'khatma-backend-dev-NotificationWorkerFunctionRole-ZbLjM5WGXROe',
-  'khatma-backend-dev-InvitationWorkerFunctionRole-YvjucBTRHnZ7',
+  'khatma-backend-dev-AuthorizerFunctionRole-kg7vSw8HsjJi',
+  'khatma-backend-dev-NotificationWorkerFunctionRole-3lVeJQRKHXZB',
+  'khatma-backend-dev-InvitationWorkerFunctionRole-VqmIjk88uRrd',
 ];
 
 const policy = {
@@ -26,7 +26,6 @@ const policy = {
   }],
 };
 
-// Write policy to temp file
 const tmpFile = path.join(os.tmpdir(), 'ssm-policy.json');
 fs.writeFileSync(tmpFile, JSON.stringify(policy, null, 2));
 console.log('Policy to attach:');
@@ -57,9 +56,6 @@ if (allOk) {
   console.log('========================================');
   console.log('  All permissions fixed!');
   console.log('========================================');
-  console.log('');
-  console.log('Now open the admin dashboard and log in:');
-  console.log('https://d1gvd6wyne19ak.cloudfront.net');
 } else {
   console.log('Some roles failed — check errors above.');
 }

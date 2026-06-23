@@ -145,21 +145,40 @@ function showLoginError(msg) {
 // Auto-login: check for existing Firebase session
 // ============================================================
 // Default API URL (current deployed endpoint)
-const DEFAULT_API_URL = 'https://yckut56u69.execute-api.us-east-1.amazonaws.com/Prod';
+const DEFAULT_API_URL = 'https://gir36cuub4.execute-api.us-east-1.amazonaws.com/Prod';
+// Old API Gateway IDs — ignore if still saved in localStorage
+const STALE_API_HOSTS = [
+  'yckut56u69.execute-api.us-east-1.amazonaws.com',
+];
+
+function resolveApiUrl() {
+  const saved = (localStorage.getItem('khatma_api_url') || '').trim().replace(/\/$/, '');
+  if (saved && !STALE_API_HOSTS.some((host) => saved.includes(host))) {
+    return saved;
+  }
+  return DEFAULT_API_URL;
+}
 
 auth.onAuthStateChanged(async (user) => {
-  const savedUrl = localStorage.getItem('khatma_api_url');
+  const apiUrl = resolveApiUrl();
   const savedEmail = localStorage.getItem('khatma_admin_email');
 
   const apiInput = document.getElementById('apiUrlInput');
-  apiInput.value = savedUrl || DEFAULT_API_URL;
+  apiInput.value = apiUrl;
+  localStorage.setItem('khatma_api_url', apiUrl);
   if (savedEmail) document.getElementById('emailInput').value = savedEmail;
 
-  if (user && savedUrl) {
-    API_URL = savedUrl;
-    currentUser = user;
-    AUTH_TOKEN = await user.getIdToken();
+  if (!user) return;
+
+  API_URL = apiUrl;
+  currentUser = user;
+  try {
+    AUTH_TOKEN = await user.getIdToken(true);
+    await api('/auth/me');
     showMainApp(user);
+  } catch (err) {
+    console.warn('Auto-login failed:', err.message);
+    await auth.signOut();
   }
 });
 
