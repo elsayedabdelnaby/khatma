@@ -2,63 +2,49 @@
 // ⚡ Lambda #2: User Management
 // ============================================================
 //
-// 📋 الـ Lambda دي بتتعامل مع 3 APIs:
+// 📋 الـ Lambda دي بتتعامل مع:
 //   POST /auth/sync  → مزامنة بيانات المستخدم بعد الـ Login
 //   GET  /auth/me    → جلب بياناتي
 //   PUT  /auth/me    → تعديل بياناتي
-//
-// 📋 إزاي بتعرف أنهي API؟
-//   - من الـ event.httpMethod (GET, POST, PUT)
-//   - ومن الـ event.path (/auth/sync, /auth/me)
-//
-// 📋 ليه Lambda واحدة لـ 3 APIs؟
-//   - عشان نقلل عدد الـ Lambdas
-//   - كلهم بيتعاملوا مع Users Table
-//   - كود أبسط وأسهل في الصيانة
+//   GET  /auth/stats → إحصائيات حسابي
 // ============================================================
 
 const { success, error } = require('../../shared/response');
-const { dynamodb, GetCommand, PutCommand, UpdateCommand } = require('../../shared/dynamodb');
+const {
+  dynamodb, GetCommand, PutCommand, UpdateCommand, QueryCommand,
+} = require('../../shared/dynamodb');
+
+// Approximate Arabic letter counts per Juz (Quran ≈ 320,015 letters / 30)
+const LETTERS_PER_PART = 10667;
 
 /**
  * 📋 الـ Handler الرئيسي
  * بيستقبل كل الـ requests وبيوزعها على الدوال المناسبة
  */
 exports.handler = async (event) => {
-  // ============================================================
-  // 📋 شرح: Router (موزع الطلبات)
-  // بناخد الـ method والـ path من الـ event
-  // وبنوجه الطلب للدالة المناسبة
-  // ============================================================
-
-  const method = event.httpMethod;    // GET, POST, PUT
-  const path = event.path;           // /auth/sync, /auth/me
+  const method = event.httpMethod;
+  const path = event.path;
 
   try {
-    // POST /auth/sync
     if (method === 'POST' && path === '/auth/sync') {
       return await syncUser(event);
     }
 
-    // GET /auth/me
     if (method === 'GET' && path === '/auth/me') {
       return await getMe(event);
     }
 
-    // PUT /auth/me
     if (method === 'PUT' && path === '/auth/me') {
       return await updateMe(event);
     }
 
-    // لو الـ path مش معروف
+    if (method === 'GET' && path === '/auth/stats') {
+      return await getStats(event);
+    }
+
     return error(404, 'NOT_FOUND', `Route not found: ${method} ${path}`);
 
   } catch (err) {
-    // ============================================================
-    // 📋 شرح: Error Handling
-    // لو حصل أي خطأ غير متوقع - بنرجع 500
-    // مهم عشان الأبليكيشن ميقعش
-    // ============================================================
     console.error('Unhandled error:', err);
     return error(500, 'INTERNAL_ERROR', 'An unexpected error occurred');
   }
@@ -159,6 +145,52 @@ async function syncUser(event) {
   const { fcmToken, ...userResponse } = userData;
 
   return success(userResponse, existingUser.Item ? 200 : 201);
+}
+
+// ============================================================
+// 📌 GET /auth/stats - إحصائيات حسابي
+// ============================================================
+// Returns:
+//   khatmasCount       → عدد الختمات اللي عملتها
+//   readingPartsCount  → عدد الأجزاء (reserved + completed)
+//   readingLettersCount→ تقدير حروف القراءة لهذه الأجزاء
+// ============================================================
+async function getStats(event) {
+  const userId = event.requestContext?.authorizer?.userId;
+
+  if (!userId) {
+    return error(401, 'UNAUTHORIZED', 'Authentication required');
+  }
+
+  // 1) Khatmas I created
+  const khatmasResult = await dynamodb.send(new QueryCommand({
+    TableName: process.env.KHATMAS_TABLE,
+    IndexName: 'userId-createdAt-index',
+    KeyConditionExpression: 'userId = :uid',
+    ExpressionAttributeValues: { ':uid': userId },
+    Select: 'COUNT',
+  }));
+  const khatmasCount = khatmasResult.Count || 0;
+
+  // 2) Parts I reserved or completed (across all khatmas)
+  const partsResult = await dynamodb.send(new QueryCommand({
+    TableName: process.env.KHATMA_PARTS_TABLE,
+    IndexName: 'userId-index',
+    KeyConditionExpression: 'userId = :uid',
+    ExpressionAttributeValues: { ':uid': userId },
+  }));
+  const myParts = partsResult.Items || [];
+  const readingParts = myParts.filter(
+    (p) => p.status === 'reserved' || p.status === 'completed'
+  );
+  const readingPartsCount = readingParts.length;
+  const readingLettersCount = readingPartsCount * LETTERS_PER_PART;
+
+  return success({
+    khatmasCount,
+    readingPartsCount,
+    readingLettersCount,
+  });
 }
 
 // ============================================================

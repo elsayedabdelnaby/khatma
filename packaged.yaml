@@ -169,6 +169,11 @@ Resources:
           Properties:
             Path: /khatmas/{khatmaId}/parts/add-extra
             Method: post
+        AvailableKhatmasByPart:
+          Type: Api
+          Properties:
+            Path: /parts/{partNumber}/available-khatmas
+            Method: get
     Metadata:
       SamResourceId: KhatmaFunction
   HomeFunction:
@@ -442,6 +447,8 @@ Resources:
         AttributeType: N
       - AttributeName: userId
         AttributeType: S
+      - AttributeName: status
+        AttributeType: S
       KeySchema:
       - AttributeName: khatmaId
         KeyType: HASH
@@ -452,6 +459,14 @@ Resources:
         KeySchema:
         - AttributeName: userId
           KeyType: HASH
+        Projection:
+          ProjectionType: ALL
+      - IndexName: partNumber-status-index
+        KeySchema:
+        - AttributeName: partNumber
+          KeyType: HASH
+        - AttributeName: status
+          KeyType: RANGE
         Projection:
           ProjectionType: ALL
   KhatmaInvitationsTable:

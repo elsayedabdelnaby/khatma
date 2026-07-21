@@ -197,14 +197,17 @@ Resources:
     Properties:
       Handler: functions/user/index.handler
       CodeUri: ./
-      Description: User management - sync, get profile, update profile
+      Description: User management - sync, get profile, update profile, stats
       LoggingConfig:
         LogFormat: Text
         LogGroup: !Sub /aws/lambda/khatma-user-${Environment}
       Policies:
-        # الصلاحيات: يقدر يقرأ ويكتب في Users Table بس
         - DynamoDBCrudPolicy:
             TableName: !Ref UsersTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref KhatmasTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref KhatmaPartsTable
       Events:
         SyncUser:
           Type: Api
@@ -221,6 +224,11 @@ Resources:
           Properties:
             Path: /auth/me
             Method: put
+        GetStats:
+          Type: Api
+          Properties:
+            Path: /auth/stats
+            Method: get
 
   # ==========================================================
   # ⚡ LAMBDA FUNCTION #3: Khatma Management (قلب المشروع)
@@ -243,6 +251,10 @@ Resources:
             TableName: !Ref KhatmaPartsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref UsersTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref KhatmaInvitationsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref NotificationsTable
         # SQS: permission to enqueue notification messages
         - SQSSendMessagePolicy:
             QueueName: !GetAtt NotificationsQueue.QueueName
@@ -277,6 +289,26 @@ Resources:
           Properties:
             Path: /khatmas/{khatmaId}/parts/add-extra
             Method: post
+        ListParticipants:
+          Type: Api
+          Properties:
+            Path: /khatmas/{khatmaId}/participants
+            Method: get
+        RemindParticipant:
+          Type: Api
+          Properties:
+            Path: /khatmas/{khatmaId}/participants/remind
+            Method: post
+        RemoveParticipant:
+          Type: Api
+          Properties:
+            Path: /khatmas/{khatmaId}/participants/remove
+            Method: post
+        AvailableKhatmasByPart:
+          Type: Api
+          Properties:
+            Path: /parts/{partNumber}/available-khatmas
+            Method: get
 
   # ==========================================================
   # ⚡ LAMBDA FUNCTION #4: Home Page
@@ -583,6 +615,8 @@ Resources:
           AttributeType: N            # N = Number (رقم)
         - AttributeName: userId
           AttributeType: S
+        - AttributeName: status
+          AttributeType: S
       KeySchema:
         - AttributeName: khatmaId
           KeyType: HASH               # كل الأجزاء بتاعت ختمة واحدة مع بعض
@@ -594,6 +628,15 @@ Resources:
           KeySchema:
             - AttributeName: userId
               KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        # GSI2: عشان نجيب "كل الختمات اللي فيها جزء X متاح"
+        - IndexName: partNumber-status-index
+          KeySchema:
+            - AttributeName: partNumber
+              KeyType: HASH
+            - AttributeName: status
+              KeyType: RANGE
           Projection:
             ProjectionType: ALL
 

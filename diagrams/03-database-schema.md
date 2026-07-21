@@ -144,7 +144,8 @@ graph LR
 
     subgraph Parts["📑 KhatmaParts Table"]
         P_PK["PK: khatmaId<br/>SK: partNumber"]
-        P_GSI1["GSI1: userId + khatmaId<br/>(My Parts across Khatmas)"]
+        P_GSI1["GSI1: userId<br/>(My Parts across Khatmas)"]
+        P_GSI2["GSI2: partNumber + status<br/>(Khatmas with available part)"]
     end
 
     subgraph Invitations["✉️ Invitations Table"]
@@ -160,6 +161,7 @@ graph LR
     Q2["🔍 Get Public Khatmas"] --> K_GSI2
     Q3["🔍 Get Khatma Parts"] --> P_PK
     Q4["🔍 Get My Parts Summary"] --> P_GSI1
+    Q4b["🔍 Get Khatmas by Available Part"] --> P_GSI2
     Q5["🔍 Get My Invitations"] --> I_GSI1
     Q6["🔍 Get My Notifications"] --> N_PK
 
@@ -176,7 +178,7 @@ graph LR
 |-------|----|----|-----|----------|
 | Users | userId | - | - | بيانات المستخدمين |
 | Khatmas | khatmaId | - | userId+createdAt, type+status | الختمات |
-| KhatmaParts | khatmaId | partNumber | userId+khatmaId | أجزاء الختمة (30 جزء) |
+| KhatmaParts | khatmaId | partNumber | userId, partNumber+status | أجزاء الختمة (30 جزء) |
 | KhatmaInvitations | khatmaId | email | email+status | الدعوات |
 | KhatmaTypes | typeId | - | - | أنواع الختمات (أدمن) |
 | Banners | bannerId | - | - | البانرات (أدمن) |

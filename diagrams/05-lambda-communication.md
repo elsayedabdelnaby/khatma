@@ -17,7 +17,7 @@ graph TB
     subgraph APILambdas["⚡ API Lambdas - HTTP Triggered"]
         AuthFn["🔐 AuthorizerFn<br/>Verify Firebase Token"]
         UserFn["👤 UserFn<br/>POST /auth/sync<br/>GET /auth/me<br/>PUT /auth/me"]
-        KhatmaFn["📖 KhatmaFn<br/>POST /khatmas<br/>GET /khatmas<br/>GET /khatmas/:id<br/>POST /parts/reserve<br/>POST /parts/complete<br/>POST /invite"]
+        KhatmaFn["📖 KhatmaFn<br/>POST /khatmas<br/>GET /khatmas<br/>GET /khatmas/:id<br/>GET /parts/:n/available-khatmas<br/>POST /parts/reserve<br/>POST /parts/complete<br/>POST /invite"]
         HomeFn["🏠 HomeFn<br/>GET /home<br/>POST /home/mark-all-done"]
         NotifFn["🔔 NotifFn<br/>GET /notifications<br/>POST /notifications/:id/read<br/>PUT /settings/reminder"]
         AdminFn["👑 AdminFn<br/>CRUD /admin/banners<br/>CRUD /admin/khatma-types<br/>CRUD /admin/notif-types"]

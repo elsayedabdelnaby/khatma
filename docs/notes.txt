@@ -1,0 +1,6 @@
+1- Notification must contains khatma id
+1.1 confirm there is an api to accept invitation of khatma or reject it
+2- we need to send notification by invitation for users already registered (email or phone number)
+2.2 while creating khatma, i select group of users to send invitation to join on this khatma and system send notification to them and can accept or reject it and can reject any invitation from this person
+
+

@@ -9,6 +9,8 @@
 The **Khatma** app allows users to create Quran completion groups (Khatmas) and share them with others.
 The Quran consists of 30 parts (Juz); each user selects a part and reads it.
 
+Users can also **search by part** (`GET /parts/{partNumber}/available-khatmas`) to find every public active khatma where that part is still free to reserve.
+
 ---
 
 ## 🔧 Tech Stack (Mobile Side)
@@ -131,6 +133,9 @@ Production:  https://api.khatma.com  (will be set up later)
 ├── Button: "Show Khatmas"
 │     → Navigate to Public Khatmas List
 │
+├── Button: "Find by Part" / "Search Chapters"
+│     → Navigate to Find Khatmas by Part
+│
 ├── Button: "Khatmas"
 │     → Navigate to Khatmas Page (3 tabs)
 │
@@ -150,6 +155,9 @@ Production:  https://api.khatma.com  (will be set up later)
 │
 │  API: GET /khatmas?type=public&status=active
 │
+├── Button / Filter: "Find by Part"
+│     → Navigate to Find Khatmas by Part
+│
 ├── Card: Khatma 1
 │     ├── Name
 │     ├── Intention
@@ -160,7 +168,44 @@ Production:  https://api.khatma.com  (will be set up later)
 │     └── ...
 ```
 
-### Screen 5: Khatmas Page (3 Tabs)
+### Screen 5: Find Khatmas by Part
+```
+📱 Screen: Find Khatmas by Part
+│
+│  User picks a Quran part (1–30), then sees every public
+│  active khatma where that part is still free to reserve.
+│
+├── Grid / Picker: Parts 1–30
+│     └── User selects e.g. Part 3
+│
+│  API: GET /parts/{partNumber}/available-khatmas
+│  Example: GET /parts/3/available-khatmas
+│
+├── IF khatmas.length > 0:
+│     └── Card per khatma:
+│           ├── Name (e.g. success_khatma, married_khatma)
+│           ├── Intention
+│           ├── Available chapters count
+│           └── Button: "Join" / "Select Chapters"
+│                 → Navigate to Select Chapters (Screen 7)
+│                       with that khatmaId
+│
+└── IF khatmas.length == 0:
+      └── Empty state: "Part X is not available in any khatma"
+```
+
+**Flutter call example:**
+```dart
+// GET /parts/3/available-khatmas?page=1&limit=20
+final response = await dio.get('/parts/$partNumber/available-khatmas', queryParameters: {
+  'page': 1,
+  'limit': 20,
+});
+final data = response.data['data'];
+final khatmas = data['khatmas'] as List; // [] if none available
+```
+
+### Screen 6: Khatmas Page (3 Tabs)
 ```
 📱 Screen: Khatmas Page
 │
@@ -189,7 +234,7 @@ Production:  https://api.khatma.com  (will be set up later)
             └── Button: "Join" → Select Chapters
 ```
 
-### Screen 6: Select Chapters
+### Screen 7: Select Chapters
 ```
 📱 Screen: Select Chapters
 │
@@ -202,13 +247,14 @@ Production:  https://api.khatma.com  (will be set up later)
 │     └── 🟡 Gold = Completed (done reading)
 │
 ├── User taps to select available chapters
+│     (If opened from Find by Part, pre-highlight that part)
 │
 └── Button: "Select Chapters"
       API: POST /khatmas/{khatmaId}/parts/reserve
       Body: { "partNumbers": [3, 7, 15] }
 ```
 
-### Screen 7: Single Khatma Page
+### Screen 8: Single Khatma Page
 ```
 📱 Screen: Single Khatma Details
 │
@@ -227,7 +273,7 @@ Production:  https://api.khatma.com  (will be set up later)
 └── Progress Bar (12/30 completed)
 ```
 
-### Screen 8: Create New Khatma
+### Screen 9: Create New Khatma
 ```
 📱 Screen: New Khatma
 │
@@ -258,7 +304,7 @@ Production:  https://api.khatma.com  (will be set up later)
       → Native share with deep link
 ```
 
-### Screen 9: Notifications
+### Screen 10: Notifications
 ```
 📱 Screen: Notifications
 │
@@ -284,7 +330,7 @@ Production:  https://api.khatma.com  (will be set up later)
 │  API: POST /notifications/{id}/read
 ```
 
-### Screen 10: Settings
+### Screen 11: Settings
 ```
 📱 Screen: Settings
 │
@@ -364,6 +410,28 @@ Call this after every login to sync user data with backend.
 }
 ```
 
+#### GET /auth/stats
+```
+🔐 Requires Authorization: Bearer <token>
+```
+```json
+// Response 200:
+{
+  "success": true,
+  "data": {
+    "khatmasCount": 5,
+    "readingPartsCount": 12,
+    "readingLettersCount": 128004
+  }
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `khatmasCount` | Number of khatmas you created |
+| `readingPartsCount` | Parts you reserved or completed (all khatmas) |
+| `readingLettersCount` | Estimated Arabic letters for those parts (~10,667 per part) |
+
 #### PUT /auth/me
 ```json
 // Request Body:
@@ -439,6 +507,19 @@ Call this after every login to sync user data with backend.
 
 ### 📖 Khatma APIs
 
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /khatmas` | Create a khatma |
+| `GET /khatmas` | List khatmas (`public` / `mine` / `invited`) |
+| `GET /parts/{partNumber}/available-khatmas` | Find public khatmas where a part is free to reserve |
+| `GET /khatmas/{khatmaId}` | Khatma details + all 30 parts |
+| `POST /khatmas/{khatmaId}/parts/reserve` | Reserve parts |
+| `POST /khatmas/{khatmaId}/parts/complete` | Mark parts completed |
+| `POST /khatmas/{khatmaId}/parts/add-extra` | Reserve extra parts after finishing yours |
+| `GET /khatmas/{khatmaId}/participants` | Participants list (owner) |
+| `POST /khatmas/{khatmaId}/participants/remind` | Remind a participant (owner) |
+| `POST /khatmas/{khatmaId}/participants/remove` | Remove a participant (owner) |
+
 #### POST /khatmas
 ```json
 // Request Body:
@@ -467,14 +548,33 @@ Call this after every login to sync user data with backend.
 }
 ```
 
-#### GET /khatmas?type={type}&status={status}
+#### GET /khatmas
 ```
+🔐 Requires Authorization: Bearer <token>
+
 Query Parameters:
-- type: "public" | "mine" | "invited"
-- status: "active" | "completed" (optional, default: "active")
-- page: 1 (optional, for pagination)
-- limit: 20 (optional)
+- type: "public" | "mine" | "invited"   (default: "public")
+- status: "active" | "completed" | "all"
+    - mine/invited default: "all"
+    - public default: "active"
+    - active = in_progress + not_started
+    - completed = finished khatmas
+- page: 1 (optional, default: 1)
+- limit: 20 (optional, default: 20, max: 100)
 ```
+
+**Examples (Flutter):**
+```
+# 1) My completed khatmas
+GET /khatmas?type=mine&status=completed&page=1&limit=20
+
+# 2) My in-progress + not-started khatmas
+GET /khatmas?type=mine&status=active&page=1&limit=20
+
+# 3) All my khatmas (any status)
+GET /khatmas?type=mine&status=all&page=1&limit=20
+```
+
 ```json
 // Response 200:
 {
@@ -486,16 +586,16 @@ Query Parameters:
         "name": "Mercy Khatma",
         "intention": "For the soul of her father",
         "type": "public",
-        "khatmaTypeName": "Ramadan",
         "status": "active",
+        "progress": "in_progress",
         "totalParts": 30,
         "completedParts": 12,
-        "availableParts": 10,
+        "reservedParts": 3,
+        "availableParts": 15,
         "myParts": [
           { "partNumber": 1, "status": "completed" },
-          { "partNumber": 5, "status": "reading" }
+          { "partNumber": 5, "status": "reserved" }
         ],
-        "createdBy": "Ahmed Mohamed",
         "createdAt": "2026-02-18T10:00:00Z"
       }
     ],
@@ -508,6 +608,150 @@ Query Parameters:
   }
 }
 ```
+
+| Field | Values |
+|-------|--------|
+| `status` | `active` \| `completed` (stored on khatma) |
+| `progress` | `completed` \| `in_progress` \| `not_started` (computed) |
+
+#### GET /parts/{partNumber}/available-khatmas
+```
+🔐 Requires Authorization: Bearer <token>
+📱 Used by: Screen 5 — Find Khatmas by Part
+
+Find all public active khatmas where a specific Quran part (1–30)
+is still available to reserve.
+
+Path Parameters:
+- partNumber: integer 1–30 (required)
+
+Query Parameters:
+- page: 1 (optional, default: 1)
+- limit: 20 (optional, default: 20, max: 100)
+```
+
+**Rules:**
+- Only returns khatmas with `type = public` and `status = active`
+- Only includes a khatma if that part’s status is `available`
+- Private / by_invitation khatmas are never returned here
+- Empty `khatmas: []` means the part is not free in any public khatma (not an error)
+
+**Examples (Flutter):**
+```
+# Part 3 available → list of khatmas
+GET /parts/3/available-khatmas
+
+# Part 4 nowhere available → empty list
+GET /parts/4/available-khatmas?page=1&limit=20
+
+# Invalid part
+GET /parts/99/available-khatmas  → 400 VALIDATION_ERROR
+```
+
+```dart
+Future<Map<String, dynamic>> getAvailableKhatmasByPart(int partNumber, {int page = 1, int limit = 20}) async {
+  final response = await dio.get(
+    '/parts/$partNumber/available-khatmas',
+    queryParameters: {'page': page, 'limit': limit},
+  );
+  return response.data['data'] as Map<String, dynamic>;
+}
+
+// Usage:
+final data = await getAvailableKhatmasByPart(3);
+final partName = data['partName'];      // "الجزء الثالث"
+final khatmas = data['khatmas'] as List; // may be empty
+final total = data['pagination']['total'];
+```
+
+```json
+// Response 200 (part available in some khatmas):
+{
+  "success": true,
+  "data": {
+    "partNumber": 3,
+    "partName": "الجزء الثالث",
+    "khatmas": [
+      {
+        "khatmaId": "kh_abc123",
+        "name": "success_khatma",
+        "intention": "For success",
+        "type": "public",
+        "status": "active",
+        "totalParts": 30,
+        "availableParts": 15,
+        "completedParts": 10,
+        "reservedParts": 5,
+        "myParts": [],
+        "progress": "in_progress",
+        "shareLink": "https://app.khatma.com/join/kh_abc123",
+        "createdAt": "2026-02-18T10:00:00Z"
+      },
+      {
+        "khatmaId": "kh_def456",
+        "name": "married_khatma",
+        "intention": "For marriage",
+        "type": "public",
+        "status": "active",
+        "totalParts": 30,
+        "availableParts": 20,
+        "completedParts": 5,
+        "reservedParts": 5,
+        "myParts": [],
+        "progress": "in_progress",
+        "shareLink": "https://app.khatma.com/join/kh_def456",
+        "createdAt": "2026-02-17T09:00:00Z"
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "limit": 20,
+      "total": 2,
+      "hasMore": false
+    }
+  }
+}
+
+// Response 200 (part not available anywhere):
+{
+  "success": true,
+  "data": {
+    "partNumber": 4,
+    "partName": "الجزء الرابع",
+    "khatmas": [],
+    "pagination": {
+      "page": 1,
+      "limit": 20,
+      "total": 0,
+      "hasMore": false
+    }
+  }
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `partNumber` | The part you searched for (1–30) |
+| `partName` | Localized Arabic name of that part |
+| `khatmas` | Public active khatmas where this part is still `available` |
+| `khatmas[].availableParts` | How many parts are still free in that khatma |
+| `khatmas[].myParts` | Parts you already reserved/completed in that khatma |
+| `pagination.total` | Total matching khatmas (before page slice) |
+
+```json
+// Response 400 (invalid part):
+{
+  "success": false,
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "partNumber must be an integer between 1 and 30"
+  }
+}
+```
+
+**Next step after picking a khatma:**
+1. Open Select Chapters → `GET /khatmas/{khatmaId}`
+2. Reserve the part → `POST /khatmas/{khatmaId}/parts/reserve` with `{ "partNumbers": [3] }`
 
 #### GET /khatmas/{khatmaId}
 ```json
@@ -546,6 +790,120 @@ Query Parameters:
       }
     ],
     "createdAt": "2026-02-18T10:00:00Z"
+  }
+}
+```
+
+#### GET /khatmas/{khatmaId}/participants
+```
+🔐 Requires Authorization: Bearer <token>
+👑 Owner only
+```
+
+```json
+// Response 200:
+{
+  "success": true,
+  "data": {
+    "khatmaId": "kh_abc123",
+    "khatmaName": "Mercy Khatma",
+    "summary": {
+      "total": 5,
+      "done": 1,
+      "reading": 2,
+      "notStarted": 2
+    },
+    "participants": [
+      {
+        "userId": "u1",
+        "email": "ahmed@email.com",
+        "displayName": "Ahmed",
+        "photoUrl": "https://...",
+        "source": "joined",
+        "invitationStatus": null,
+        "progress": "reading",
+        "partsCount": 2,
+        "completedPartsCount": 1,
+        "reservedPartsCount": 1,
+        "parts": [
+          { "partNumber": 1, "status": "completed" },
+          { "partNumber": 5, "status": "reserved" }
+        ],
+        "isOwner": false,
+        "canRemind": true,
+        "canRemove": true
+      },
+      {
+        "userId": null,
+        "email": "friend@email.com",
+        "displayName": "friend@email.com",
+        "source": "invitation",
+        "invitationStatus": "pending",
+        "progress": "not_started",
+        "partsCount": 0,
+        "canRemind": true,
+        "canRemove": true
+      }
+    ]
+  }
+}
+```
+
+| `progress` | Meaning |
+|------------|---------|
+| `done` | All assigned parts completed |
+| `reading` | Has reserved parts (still reading) |
+| `not_started` | Invited but no parts yet |
+
+#### POST /khatmas/{khatmaId}/participants/remind
+```
+👑 Owner only — remind a not_started or reading participant
+```
+
+```json
+// Request (use userId OR email):
+{ "userId": "u2" }
+// OR
+{ "email": "friend@email.com" }
+
+// Response 200:
+{
+  "success": true,
+  "data": {
+    "reminded": true,
+    "pushQueued": true,
+    "participant": {
+      "userId": "u2",
+      "email": "friend@email.com",
+      "progress": "reading"
+    },
+    "message": "Reminder sent"
+  }
+}
+```
+
+#### POST /khatmas/{khatmaId}/participants/remove
+```
+👑 Owner only — remove participant and free their parts
+```
+
+```json
+// Request (use userId OR email):
+{ "userId": "u2" }
+// OR
+{ "email": "friend@email.com" }
+
+// Response 200:
+{
+  "success": true,
+  "data": {
+    "removed": true,
+    "freedParts": 2,
+    "participant": {
+      "userId": "u2",
+      "email": "friend@email.com",
+      "progress": "reading"
+    }
   }
 }
 ```

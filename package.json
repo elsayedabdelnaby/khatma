@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.995.0",
+    "@aws-sdk/client-sqs": "^3.995.0",
     "@aws-sdk/s3-request-presigner": "^3.995.0",
     "firebase-admin": "^12.0.0",
     "uuid": "^9.0.0"

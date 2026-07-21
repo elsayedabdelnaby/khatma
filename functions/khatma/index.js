@@ -9,14 +9,21 @@
 //   POST /khatmas/{khatmaId}/parts/reserve     → حجز أجزاء
 //   POST /khatmas/{khatmaId}/parts/complete    → تسجيل إتمام أجزاء
 //   POST /khatmas/{khatmaId}/parts/add-extra   → إضافة جزء إضافي
+//   GET  /khatmas/{khatmaId}/participants      → قائمة المشاركين (المالك فقط)
+//   POST /khatmas/{khatmaId}/participants/remind → تذكير مشارك
+//   POST /khatmas/{khatmaId}/participants/remove → إزالة مشارك
+//   GET  /parts/{partNumber}/available-khatmas  → ختمات عامة متاح فيها هذا الجزء
 // ============================================================
 
 const { success, error } = require('../../shared/response');
 const {
   dynamodb, GetCommand, PutCommand, QueryCommand,
-  UpdateCommand, BatchWriteCommand
+  UpdateCommand, BatchWriteCommand, ScanCommand, DeleteCommand,
 } = require('../../shared/dynamodb');
+const { SQSClient, SendMessageCommand } = require('@aws-sdk/client-sqs');
 const { v4: uuid } = require('uuid');
+
+const sqs = new SQSClient({});
 
 // ============================================================
 // 📋 أسماء أجزاء القرآن الـ 30
@@ -74,6 +81,26 @@ exports.handler = async (event) => {
     // POST /khatmas/{khatmaId}/parts/add-extra
     if (method === 'POST' && path.endsWith('/parts/add-extra')) {
       return await addExtraParts(event, userId);
+    }
+
+    // GET /khatmas/{khatmaId}/participants
+    if (method === 'GET' && path.endsWith('/participants')) {
+      return await listParticipants(event, userId);
+    }
+
+    // POST /khatmas/{khatmaId}/participants/remind
+    if (method === 'POST' && path.endsWith('/participants/remind')) {
+      return await remindParticipant(event, userId);
+    }
+
+    // POST /khatmas/{khatmaId}/participants/remove
+    if (method === 'POST' && path.endsWith('/participants/remove')) {
+      return await removeParticipant(event, userId);
+    }
+
+    // GET /parts/{partNumber}/available-khatmas
+    if (method === 'GET' && path.match(/^\/parts\/\d+\/available-khatmas$/)) {
+      return await listAvailableKhatmasByPart(event, userId);
     }
 
     return error(404, 'NOT_FOUND', `Route not found: ${method} ${path}`);
@@ -151,11 +178,7 @@ async function createKhatma(event, userId) {
           khatmaId,
           partNumber: i,
           partName: PART_NAMES[i],
-          userId: '',
-          userName: '',
           status: 'available',
-          reservedAt: '',
-          completedAt: '',
         },
       },
     });
@@ -182,53 +205,303 @@ async function createKhatma(event, userId) {
 // 📌 GET /khatmas - قائمة الختمات
 // ============================================================
 // Query Parameters:
-//   type=public  → ختمات عامة نشطة
-//   type=mine    → ختماتي (اللي أنا عملتها)
-//   type=invited → ختمات أنا مدعو فيها
+//   type=public|mine|invited   → مصدر القائمة (default: public)
+//   status=active|completed|all → فلتر حالة الختمة (default: all for mine/invited, active for public)
+//   page=1                     → رقم الصفحة (default: 1)
+//   limit=20                   → حجم الصفحة (default: 20, max: 100)
 // ============================================================
+function deriveParticipantProgress(parts) {
+  if (!parts.length) return 'not_started';
+  const hasReserved = parts.some((p) => p.status === 'reserved');
+  const allCompleted = parts.every((p) => p.status === 'completed');
+  if (allCompleted) return 'done';
+  if (hasReserved || parts.some((p) => p.status === 'completed')) return 'reading';
+  return 'not_started';
+}
+
+function participantActions(progress, isOwner, isManageable) {
+  const canManage = isManageable && !isOwner && (progress === 'not_started' || progress === 'reading');
+  return {
+    canRemind: canManage,
+    canRemove: canManage,
+  };
+}
+
+async function loadKhatmaForOwner(khatmaId, userId) {
+  const khatmaResult = await dynamodb.send(new GetCommand({
+    TableName: process.env.KHATMAS_TABLE,
+    Key: { khatmaId },
+  }));
+
+  if (!khatmaResult.Item) {
+    return { error: error(404, 'NOT_FOUND', 'Khatma not found') };
+  }
+
+  if (khatmaResult.Item.userId !== userId) {
+    return { error: error(403, 'FORBIDDEN', 'Only the khatma owner can manage participants') };
+  }
+
+  return { khatma: khatmaResult.Item };
+}
+
+async function loadKhatmaParts(khatmaId) {
+  const partsResult = await dynamodb.send(new QueryCommand({
+    TableName: process.env.KHATMA_PARTS_TABLE,
+    KeyConditionExpression: 'khatmaId = :kid',
+    ExpressionAttributeValues: { ':kid': khatmaId },
+    ScanIndexForward: true,
+  }));
+  return partsResult.Items || [];
+}
+
+async function loadKhatmaInvitations(khatmaId) {
+  const result = await dynamodb.send(new QueryCommand({
+    TableName: process.env.KHATMA_INVITATIONS_TABLE,
+    KeyConditionExpression: 'khatmaId = :kid',
+    ExpressionAttributeValues: { ':kid': khatmaId },
+  }));
+  return result.Items || [];
+}
+
+async function findUserByEmail(email) {
+  const result = await dynamodb.send(new ScanCommand({
+    TableName: process.env.USERS_TABLE,
+    FilterExpression: 'email = :email',
+    ExpressionAttributeValues: { ':email': email.toLowerCase() },
+    Limit: 1,
+  }));
+  return result.Items?.[0] || null;
+}
+
+async function buildParticipantsList(khatma, parts, invitations, options = {}) {
+  const { includeManageFlags = false, ownerUserId } = options;
+  const participantsMap = {};
+
+  for (const part of parts) {
+    if (!part.userId) continue;
+    if (!participantsMap[part.userId]) {
+      participantsMap[part.userId] = {
+        userId: part.userId,
+        email: null,
+        displayName: part.userName || 'Unknown',
+        photoUrl: null,
+        source: 'joined',
+        invitationStatus: null,
+        parts: [],
+      };
+    }
+    participantsMap[part.userId].parts.push({
+      partNumber: part.partNumber,
+      partName: part.partName || PART_NAMES[part.partNumber],
+      status: part.status,
+    });
+  }
+
+  for (const inv of invitations) {
+    if (inv.status === 'declined') continue;
+    const email = (inv.email || '').toLowerCase();
+    if (!email) continue;
+
+    const uid = inv.invitedUserId || null;
+    if (uid && participantsMap[uid]) {
+      participantsMap[uid].invitationStatus = inv.status;
+      if (!participantsMap[uid].email) participantsMap[uid].email = email;
+      continue;
+    }
+
+    const existingByEmail = Object.values(participantsMap).find(
+      (p) => p.email && p.email.toLowerCase() === email
+    );
+    if (existingByEmail) {
+      existingByEmail.invitationStatus = inv.status;
+      continue;
+    }
+
+    const key = uid || `email:${email}`;
+    if (!participantsMap[key]) {
+      participantsMap[key] = {
+        userId: uid,
+        email,
+        displayName: email,
+        photoUrl: null,
+        source: uid ? 'joined' : 'invitation',
+        invitationStatus: inv.status,
+        parts: [],
+      };
+    }
+  }
+
+  const participants = [];
+  for (const entry of Object.values(participantsMap)) {
+    if (entry.userId) {
+      const userResult = await dynamodb.send(new GetCommand({
+        TableName: process.env.USERS_TABLE,
+        Key: { userId: entry.userId },
+      }));
+      if (userResult.Item) {
+        entry.email = userResult.Item.email || entry.email;
+        entry.displayName = userResult.Item.displayName || entry.displayName;
+        entry.photoUrl = userResult.Item.photoUrl || null;
+      }
+    }
+
+    const progress = deriveParticipantProgress(entry.parts);
+    const isOwner = entry.userId === ownerUserId;
+    const item = {
+      userId: entry.userId,
+      email: entry.email,
+      displayName: entry.displayName,
+      photoUrl: entry.photoUrl,
+      source: entry.source,
+      invitationStatus: entry.invitationStatus,
+      progress,
+      partsCount: entry.parts.length,
+      completedPartsCount: entry.parts.filter((p) => p.status === 'completed').length,
+      reservedPartsCount: entry.parts.filter((p) => p.status === 'reserved').length,
+      parts: entry.parts,
+      isOwner,
+    };
+
+    if (includeManageFlags) {
+      Object.assign(item, participantActions(progress, isOwner, true));
+    }
+
+    participants.push(item);
+  }
+
+  participants.sort((a, b) => {
+    if (a.isOwner) return -1;
+    if (b.isOwner) return 1;
+    return a.displayName.localeCompare(b.displayName);
+  });
+
+  return participants;
+}
+
+async function queuePushNotification({ fcmToken, title, body, data }) {
+  if (!fcmToken || !process.env.NOTIFICATIONS_QUEUE_URL) return false;
+
+  await sqs.send(new SendMessageCommand({
+    QueueUrl: process.env.NOTIFICATIONS_QUEUE_URL,
+    MessageBody: JSON.stringify({ fcmToken, title, body, data }),
+  }));
+  return true;
+}
+
+async function createInAppNotification(targetUserId, khatma, message) {
+  const now = new Date().toISOString();
+  await dynamodb.send(new PutCommand({
+    TableName: process.env.NOTIFICATIONS_TABLE,
+    Item: {
+      userId: targetUserId,
+      createdAt: now,
+      type: 'reminder',
+      title: `Reminder: ${khatma.name}`,
+      body: message,
+      isRead: false,
+      actionType: 'open_khatma',
+      actionId: khatma.khatmaId,
+    },
+  }));
+}
+
+function parsePagination(queryParams) {
+  const page = Math.max(1, parseInt(queryParams.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(queryParams.limit, 10) || 20));
+  return { page, limit };
+}
+
+function applyPagination(items, page, limit) {
+  const total = items.length;
+  const start = (page - 1) * limit;
+  return {
+    items: items.slice(start, start + limit),
+    pagination: {
+      page,
+      limit,
+      total,
+      hasMore: start + limit < total,
+    },
+  };
+}
+
+function deriveProgress(khatma) {
+  if (khatma.status === 'completed' || (khatma.completedParts || 0) >= 30) {
+    return 'completed';
+  }
+  if ((khatma.reservedParts || 0) > 0 || (khatma.completedParts || 0) > 0) {
+    return 'in_progress';
+  }
+  return 'not_started';
+}
+
+async function enrichKhatmaWithParts(khatma, userId) {
+  const partsResult = await dynamodb.send(new QueryCommand({
+    TableName: process.env.KHATMA_PARTS_TABLE,
+    KeyConditionExpression: 'khatmaId = :kid',
+    ExpressionAttributeValues: { ':kid': khatma.khatmaId },
+  }));
+
+  const parts = partsResult.Items || [];
+  khatma.availableParts = parts.filter((p) => p.status === 'available').length;
+  khatma.completedParts = parts.filter((p) => p.status === 'completed').length;
+  khatma.reservedParts = parts.filter((p) => p.status === 'reserved').length;
+
+  if (!khatma.myParts) {
+    khatma.myParts = parts
+      .filter((p) => p.userId === userId)
+      .map((p) => ({ partNumber: p.partNumber, status: p.status }));
+  }
+
+  khatma.progress = deriveProgress(khatma);
+  return khatma;
+}
+
 async function listKhatmas(event, userId) {
   const queryParams = event.queryStringParameters || {};
   const listType = queryParams.type || 'public';
+  const statusFilter = (queryParams.status || (listType === 'public' ? 'active' : 'all')).toLowerCase();
+  const { page, limit } = parsePagination(queryParams);
+
+  const validStatuses = ['active', 'completed', 'all'];
+  if (!validStatuses.includes(statusFilter)) {
+    return error(400, 'VALIDATION_ERROR', 'status must be one of: active, completed, all');
+  }
 
   let khatmas = [];
 
   if (listType === 'mine') {
-    // ============================================================
-    // 📋 شرح: ختماتي
-    // بنستخدم GSI: userId-createdAt-index
-    // بنجيب كل الختمات اللي أنا عملتها
-    // ============================================================
-    const result = await dynamodb.send(new QueryCommand({
+    const queryInput = {
       TableName: process.env.KHATMAS_TABLE,
       IndexName: 'userId-createdAt-index',
       KeyConditionExpression: 'userId = :uid',
       ExpressionAttributeValues: { ':uid': userId },
-      ScanIndexForward: false, // الأحدث الأول
-    }));
+      ScanIndexForward: false,
+    };
+
+    // Filter by khatma status when requested (active = in_progress + not_started)
+    if (statusFilter !== 'all') {
+      queryInput.FilterExpression = '#status = :status';
+      queryInput.ExpressionAttributeNames = { '#status': 'status' };
+      queryInput.ExpressionAttributeValues[':status'] = statusFilter;
+    }
+
+    const result = await dynamodb.send(new QueryCommand(queryInput));
     khatmas = result.Items || [];
 
   } else if (listType === 'public') {
-    // ============================================================
-    // 📋 شرح: ختمات عامة
-    // بنستخدم GSI: type-status-index
-    // بنجيب كل الختمات العامة النشطة
-    // ============================================================
+    const publicStatus = statusFilter === 'all' ? 'active' : statusFilter;
     const result = await dynamodb.send(new QueryCommand({
       TableName: process.env.KHATMAS_TABLE,
       IndexName: 'type-status-index',
       KeyConditionExpression: '#type = :type AND #status = :status',
       ExpressionAttributeNames: { '#type': 'type', '#status': 'status' },
-      ExpressionAttributeValues: { ':type': 'public', ':status': 'active' },
+      ExpressionAttributeValues: { ':type': 'public', ':status': publicStatus },
       ScanIndexForward: false,
     }));
     khatmas = result.Items || [];
 
   } else if (listType === 'invited') {
-    // ============================================================
-    // 📋 شرح: ختمات مدعو فيها
-    // 1. نجيب الأجزاء اللي أنا حجزتها (من Parts Table)
-    // 2. نجيب تفاصيل الختمات بتاعتهم
-    // ============================================================
     const partsResult = await dynamodb.send(new QueryCommand({
       TableName: process.env.KHATMA_PARTS_TABLE,
       IndexName: 'userId-index',
@@ -237,7 +510,7 @@ async function listKhatmas(event, userId) {
     }));
 
     const myParts = partsResult.Items || [];
-    const khatmaIds = [...new Set(myParts.map(p => p.khatmaId))];
+    const khatmaIds = [...new Set(myParts.map((p) => p.khatmaId))];
 
     for (const kid of khatmaIds) {
       const khatma = await dynamodb.send(new GetCommand({
@@ -245,35 +518,89 @@ async function listKhatmas(event, userId) {
         Key: { khatmaId: kid },
       }));
       if (khatma.Item && khatma.Item.userId !== userId) {
+        if (statusFilter !== 'all' && khatma.Item.status !== statusFilter) {
+          continue;
+        }
         khatma.Item.myParts = myParts
-          .filter(p => p.khatmaId === kid)
-          .map(p => ({ partNumber: p.partNumber, status: p.status }));
+          .filter((p) => p.khatmaId === kid)
+          .map((p) => ({ partNumber: p.partNumber, status: p.status }));
         khatmas.push(khatma.Item);
       }
     }
+  } else {
+    return error(400, 'VALIDATION_ERROR', 'type must be one of: public, mine, invited');
   }
 
-  // لكل ختمة - نجيب عدد الأجزاء المتاحة والمكتملة
-  for (const khatma of khatmas) {
-    const partsResult = await dynamodb.send(new QueryCommand({
-      TableName: process.env.KHATMA_PARTS_TABLE,
-      KeyConditionExpression: 'khatmaId = :kid',
-      ExpressionAttributeValues: { ':kid': khatma.khatmaId },
+  // Paginate before enriching parts (cheaper)
+  const { items: pageItems, pagination } = applyPagination(khatmas, page, limit);
+
+  for (const khatma of pageItems) {
+    await enrichKhatmaWithParts(khatma, userId);
+  }
+
+  return success({ khatmas: pageItems, pagination });
+}
+
+// ============================================================
+// 📌 GET /parts/{partNumber}/available-khatmas
+// ============================================================
+// Returns public active khatmas where the given part is still available.
+// Query: page, limit
+// ============================================================
+async function listAvailableKhatmasByPart(event, userId) {
+  const rawPart = event.pathParameters?.partNumber
+    || (event.path.match(/^\/parts\/(\d+)\/available-khatmas$/) || [])[1];
+  const partNumber = parseInt(rawPart, 10);
+
+  if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > 30) {
+    return error(400, 'VALIDATION_ERROR', 'partNumber must be an integer between 1 and 30');
+  }
+
+  const queryParams = event.queryStringParameters || {};
+  const { page, limit } = parsePagination(queryParams);
+
+  // Query all part records where this juz is still available
+  const partsResult = await dynamodb.send(new QueryCommand({
+    TableName: process.env.KHATMA_PARTS_TABLE,
+    IndexName: 'partNumber-status-index',
+    KeyConditionExpression: 'partNumber = :pn AND #status = :available',
+    ExpressionAttributeNames: { '#status': 'status' },
+    ExpressionAttributeValues: {
+      ':pn': partNumber,
+      ':available': 'available',
+    },
+  }));
+
+  const partRows = partsResult.Items || [];
+  const khatmaIds = [...new Set(partRows.map((p) => p.khatmaId))];
+
+  const khatmas = [];
+  for (const kid of khatmaIds) {
+    const khatmaResult = await dynamodb.send(new GetCommand({
+      TableName: process.env.KHATMAS_TABLE,
+      Key: { khatmaId: kid },
     }));
-
-    const parts = partsResult.Items || [];
-    khatma.availableParts = parts.filter(p => p.status === 'available').length;
-    khatma.completedParts = parts.filter(p => p.status === 'completed').length;
-    khatma.reservedParts = parts.filter(p => p.status === 'reserved').length;
-
-    if (!khatma.myParts) {
-      khatma.myParts = parts
-        .filter(p => p.userId === userId)
-        .map(p => ({ partNumber: p.partNumber, status: p.status }));
+    const khatma = khatmaResult.Item;
+    // Only joinable public active khatmas
+    if (khatma && khatma.type === 'public' && khatma.status === 'active') {
+      khatmas.push(khatma);
     }
   }
 
-  return success({ khatmas });
+  khatmas.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+
+  const { items: pageItems, pagination } = applyPagination(khatmas, page, limit);
+
+  for (const khatma of pageItems) {
+    await enrichKhatmaWithParts(khatma, userId);
+  }
+
+  return success({
+    partNumber,
+    partName: PART_NAMES[partNumber],
+    khatmas: pageItems,
+    pagination,
+  });
 }
 
 // ============================================================
@@ -314,30 +641,16 @@ async function getKhatmaDetails(event, userId) {
   }));
 
   const parts = partsResult.Items || [];
-
-  // تجميع المشاركين
-  const participantsMap = {};
-  for (const part of parts) {
-    if (part.userId) {
-      if (!participantsMap[part.userId]) {
-        participantsMap[part.userId] = {
-          userId: part.userId,
-          displayName: part.userName || 'Unknown',
-          parts: [],
-        };
-      }
-      participantsMap[part.userId].parts.push({
-        partNumber: part.partNumber,
-        partName: part.partName || PART_NAMES[part.partNumber],
-        status: part.status,
-      });
-    }
-  }
+  const invitations = await loadKhatmaInvitations(khatmaId);
+  const participants = await buildParticipantsList(khatma, parts, invitations, {
+    ownerUserId: khatma.userId,
+  });
 
   return success({
     ...khatma,
     completedParts: parts.filter(p => p.status === 'completed').length,
     availableParts: parts.filter(p => p.status === 'available').length,
+    reservedParts: parts.filter(p => p.status === 'reserved').length,
     parts: parts.map(p => ({
       partNumber: p.partNumber,
       partName: p.partName || PART_NAMES[p.partNumber],
@@ -345,7 +658,217 @@ async function getKhatmaDetails(event, userId) {
       userName: p.userName || null,
       userId: p.userId || null,
     })),
-    participants: Object.values(participantsMap),
+    participants,
+  });
+}
+
+// ============================================================
+// 📌 GET /khatmas/{khatmaId}/participants - قائمة المشاركين
+// ============================================================
+async function listParticipants(event, userId) {
+  const khatmaId = event.pathParameters?.khatmaId
+    || event.path.split('/')[2];
+
+  const { khatma, error: ownerError } = await loadKhatmaForOwner(khatmaId, userId);
+  if (ownerError) return ownerError;
+
+  const parts = await loadKhatmaParts(khatmaId);
+  const invitations = await loadKhatmaInvitations(khatmaId);
+  const participants = await buildParticipantsList(khatma, parts, invitations, {
+    includeManageFlags: true,
+    ownerUserId: khatma.userId,
+  });
+
+  return success({
+    khatmaId,
+    khatmaName: khatma.name,
+    participants,
+    summary: {
+      total: participants.length,
+      done: participants.filter((p) => p.progress === 'done').length,
+      reading: participants.filter((p) => p.progress === 'reading').length,
+      notStarted: participants.filter((p) => p.progress === 'not_started').length,
+    },
+  });
+}
+
+// ============================================================
+// 📌 POST /khatmas/{khatmaId}/participants/remind
+// Body: { "userId": "..." } OR { "email": "..." }
+// ============================================================
+async function remindParticipant(event, userId) {
+  const khatmaId = event.pathParameters?.khatmaId
+    || event.path.split('/')[2];
+  const body = JSON.parse(event.body || '{}');
+  const targetUserId = body.userId;
+  const targetEmail = body.email?.trim().toLowerCase();
+
+  if (!targetUserId && !targetEmail) {
+    return error(400, 'VALIDATION_ERROR', 'userId or email is required');
+  }
+
+  const { khatma, error: ownerError } = await loadKhatmaForOwner(khatmaId, userId);
+  if (ownerError) return ownerError;
+
+  let participantUser = null;
+  if (targetUserId) {
+    if (targetUserId === khatma.userId) {
+      return error(400, 'VALIDATION_ERROR', 'Cannot remind the khatma owner');
+    }
+    const userResult = await dynamodb.send(new GetCommand({
+      TableName: process.env.USERS_TABLE,
+      Key: { userId: targetUserId },
+    }));
+    participantUser = userResult.Item;
+    if (!participantUser) {
+      return error(404, 'NOT_FOUND', 'Participant not found');
+    }
+  } else {
+    participantUser = await findUserByEmail(targetEmail);
+  }
+
+  const parts = await loadKhatmaParts(khatmaId);
+  const invitations = await loadKhatmaInvitations(khatmaId);
+  const participants = await buildParticipantsList(khatma, parts, invitations, {
+    includeManageFlags: true,
+    ownerUserId: khatma.userId,
+  });
+
+  const participant = participants.find((p) => {
+    if (targetUserId) return p.userId === targetUserId;
+    return p.email && p.email.toLowerCase() === targetEmail;
+  });
+
+  if (!participant) {
+    return error(404, 'NOT_FOUND', 'Participant not found in this khatma');
+  }
+
+  if (!participant.canRemind) {
+    return error(400, 'VALIDATION_ERROR', 'Reminder is only available for not_started or reading participants');
+  }
+
+  const message = participant.progress === 'not_started'
+    ? `You have been invited to join "${khatma.name}". Open the app to accept and select your parts.`
+    : `Your reading portion in "${khatma.name}" is still waiting for you.`;
+
+  let pushQueued = false;
+  if (participantUser?.userId) {
+    await createInAppNotification(participantUser.userId, khatma, message);
+    pushQueued = await queuePushNotification({
+      fcmToken: participantUser.fcmToken,
+      title: `Reminder: ${khatma.name}`,
+      body: message,
+      data: { type: 'reminder', khatmaId, actionType: 'open_khatma' },
+    });
+  }
+
+  return success({
+    reminded: true,
+    pushQueued,
+    participant: {
+      userId: participant.userId,
+      email: participant.email,
+      progress: participant.progress,
+    },
+    message: participantUser
+      ? (pushQueued ? 'Reminder sent' : 'In-app notification saved (no push token)')
+      : 'Participant has not joined the app yet — reminder recorded when they sign up',
+  });
+}
+
+// ============================================================
+// 📌 POST /khatmas/{khatmaId}/participants/remove
+// Body: { "userId": "..." } OR { "email": "..." }
+// ============================================================
+async function removeParticipant(event, userId) {
+  const khatmaId = event.pathParameters?.khatmaId
+    || event.path.split('/')[2];
+  const body = JSON.parse(event.body || '{}');
+  const targetUserId = body.userId;
+  const targetEmail = body.email?.trim().toLowerCase();
+
+  if (!targetUserId && !targetEmail) {
+    return error(400, 'VALIDATION_ERROR', 'userId or email is required');
+  }
+
+  const { khatma, error: ownerError } = await loadKhatmaForOwner(khatmaId, userId);
+  if (ownerError) return ownerError;
+
+  if (targetUserId && targetUserId === khatma.userId) {
+    return error(400, 'VALIDATION_ERROR', 'Cannot remove the khatma owner');
+  }
+
+  const parts = await loadKhatmaParts(khatmaId);
+  const invitations = await loadKhatmaInvitations(khatmaId);
+  const participants = await buildParticipantsList(khatma, parts, invitations, {
+    includeManageFlags: true,
+    ownerUserId: khatma.userId,
+  });
+
+  const participant = participants.find((p) => {
+    if (targetUserId) return p.userId === targetUserId;
+    return p.email && p.email.toLowerCase() === targetEmail;
+  });
+
+  if (!participant) {
+    return error(404, 'NOT_FOUND', 'Participant not found in this khatma');
+  }
+
+  if (!participant.canRemove) {
+    return error(400, 'VALIDATION_ERROR', 'Only not_started or reading participants can be removed');
+  }
+
+  const now = new Date().toISOString();
+  let freedParts = 0;
+
+  if (participant.userId) {
+    const userParts = parts.filter((p) => p.userId === participant.userId);
+    for (const part of userParts) {
+      await dynamodb.send(new UpdateCommand({
+        TableName: process.env.KHATMA_PARTS_TABLE,
+        Key: { khatmaId, partNumber: part.partNumber },
+        UpdateExpression: 'SET #status = :available REMOVE userId, userName, reservedAt, completedAt',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: { ':available': 'available' },
+      }));
+      freedParts++;
+    }
+
+    const updatedParts = await loadKhatmaParts(khatmaId);
+    const completedCount = updatedParts.filter((p) => p.status === 'completed').length;
+    await dynamodb.send(new UpdateCommand({
+      TableName: process.env.KHATMAS_TABLE,
+      Key: { khatmaId },
+      UpdateExpression: 'SET completedParts = :count, #status = :active, updatedAt = :now',
+      ExpressionAttributeNames: { '#status': 'status' },
+      ExpressionAttributeValues: {
+        ':count': completedCount,
+        ':active': 'active',
+        ':now': now,
+      },
+    }));
+  }
+
+  const emailToRemove = (participant.email || targetEmail || '').toLowerCase();
+  if (emailToRemove) {
+    try {
+      await dynamodb.send(new DeleteCommand({
+        TableName: process.env.KHATMA_INVITATIONS_TABLE,
+        Key: { khatmaId, email: emailToRemove },
+      }));
+    } catch (err) {
+      // invitation may not exist
+    }
+  }
+
+  return success({
+    removed: true,
+    freedParts,
+    participant: {
+      userId: participant.userId,
+      email: participant.email,
+      progress: participant.progress,
+    },
   });
 }
 
