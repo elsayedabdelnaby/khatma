@@ -148,6 +148,17 @@ async function deleteBanner(event) {
 // 📋 KHATMA TYPES CRUD
 // ============================================================
 
+// Normalizes a hex color code (e.g. "1E88E5" → "#1E88E5"). Returns '' if invalid/empty.
+function normalizeColor(value) {
+  if (!value || typeof value !== 'string') return '';
+  let c = value.trim();
+  if (!c) return '';
+  if (!c.startsWith('#')) c = `#${c}`;
+  return /^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$/.test(c)
+    ? c.toUpperCase()
+    : '';
+}
+
 async function listKhatmaTypes() {
   const result = await dynamodb.send(new ScanCommand({
     TableName: process.env.KHATMA_TYPES_TABLE,
@@ -169,6 +180,7 @@ async function createKhatmaType(event) {
     description_ar: body.description_ar || '',
     description_en: body.description_en || '',
     icon: body.icon || '',
+    color: normalizeColor(body.color),
     isActive: body.isActive !== undefined ? body.isActive : true,
     sortOrder: body.sortOrder || 0,
     createdAt: now,
@@ -186,9 +198,13 @@ async function updateKhatmaType(event) {
   const typeId = event.path.split('/').pop();
   const body = JSON.parse(event.body || '{}');
 
+  if (body.color !== undefined) {
+    body.color = normalizeColor(body.color);
+  }
+
   const allowedFields = [
     'name_ar', 'name_en', 'name_ur', 'name_hi',
-    'description_ar', 'description_en', 'icon', 'isActive', 'sortOrder'
+    'description_ar', 'description_en', 'icon', 'color', 'isActive', 'sortOrder'
   ];
 
   return await updateItem(process.env.KHATMA_TYPES_TABLE, { typeId }, body, allowedFields);

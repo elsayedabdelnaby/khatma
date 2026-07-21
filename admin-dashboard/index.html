@@ -271,6 +271,17 @@
           <input type="number" id="ktSortOrder" value="0">
         </div>
       </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="ktColor">Color</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="color" id="ktColor" value="#4CAF50" style="width:48px;height:38px;padding:2px;cursor:pointer"
+              oninput="document.getElementById('ktColorHex').value = this.value.toUpperCase()">
+            <input type="text" id="ktColorHex" placeholder="#4CAF50" value="#4CAF50" style="flex:1"
+              oninput="if(/^#?[0-9A-Fa-f]{6}$/.test(this.value)){document.getElementById('ktColor').value = this.value.startsWith('#') ? this.value : '#'+this.value;}">
+          </div>
+        </div>
+      </div>
       <div class="form-group">
         <label class="toggle-label">
           <input type="checkbox" id="ktIsActive" checked>

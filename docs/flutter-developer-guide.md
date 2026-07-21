@@ -752,6 +752,79 @@ final total = data['pagination']['total'];
 **Next step after picking a khatma:**
 1. Open Select Chapters → `GET /khatmas/{khatmaId}`
 2. Reserve the part → `POST /khatmas/{khatmaId}/parts/reserve` with `{ "partNumbers": [3] }`
+3. OR reserve the same part in several khatmas at once → `POST /parts/{partNumber}/reserve`
+
+#### POST /parts/{partNumber}/reserve
+```
+🔐 Requires Authorization: Bearer <token>
+📱 Used after "search by part": reserve the SAME part in multiple khatmas at once
+```
+
+Reserves one Quran part (1–30) for the current user across each khatma in
+`khatmaIds`. Each khatma is processed independently and reported in
+`reserved` or `failed`.
+
+```
+Path Parameters:
+- partNumber: integer 1–30 (required)
+```
+
+```json
+// Request Body:
+{
+  "khatmaIds": ["kh_abc123", "kh_def456", "kh_ghi789"]
+}
+```
+
+```dart
+Future<Map<String, dynamic>> reservePartInKhatmas(int partNumber, List<String> khatmaIds) async {
+  final response = await dio.post(
+    '/parts/$partNumber/reserve',
+    data: {'khatmaIds': khatmaIds},
+  );
+  return response.data['data'] as Map<String, dynamic>;
+}
+```
+
+```json
+// Response 200 (all reserved) / 207 (partial):
+{
+  "success": true,
+  "data": {
+    "partNumber": 3,
+    "partName": "الجزء الثالث",
+    "reserved": [
+      { "khatmaId": "kh_abc123", "khatmaName": "success_khatma" },
+      { "khatmaId": "kh_def456", "khatmaName": "married_khatma" }
+    ],
+    "failed": [
+      { "khatmaId": "kh_ghi789", "reason": "PART_NOT_AVAILABLE" }
+    ]
+  }
+}
+```
+
+| `failed[].reason` | Meaning |
+|-------------------|---------|
+| `NOT_FOUND` | Khatma id does not exist |
+| `KHATMA_NOT_ACTIVE` | Khatma is completed/inactive |
+| `FORBIDDEN` | Private khatma you don't own |
+| `PART_NOT_AVAILABLE` | Part already reserved/completed there |
+
+```json
+// Response 409 (none reserved):
+{
+  "success": false,
+  "error": {
+    "code": "PART_NOT_AVAILABLE",
+    "message": "Part could not be reserved in any of the requested khatmas"
+  }
+}
+```
+
+- **HTTP 200** → every khatma reserved
+- **HTTP 207** → some reserved, some in `failed`
+- **HTTP 409** → none could be reserved
 
 #### GET /khatmas/{khatmaId}
 ```json
@@ -936,29 +1009,59 @@ final total = data['pagination']['total'];
 ```
 
 #### POST /khatmas/{khatmaId}/parts/complete
+```
+🔐 Requires Authorization: Bearer <token>
+```
+
+**Cross-khatma completion:** when you complete a part, the backend marks that
+**same part `completed` in every khatma where you have it reserved**. Khatmas
+you joined but where you did NOT reserve this part are left untouched.
+
 ```json
 // Request Body:
 {
   "partNumbers": [3]
 }
+```
 
+```json
 // Response 200:
 {
   "success": true,
-  "message": "Parts marked as completed",
   "data": {
     "completed": [3],
-    "khatmaCompleted": false
+    "failed": [],
+    "khatmaCompleted": false,
+    "propagatedKhatmas": ["kh_abc123", "kh_def456"],
+    "perPart": {
+      "3": ["kh_abc123", "kh_def456"]
+    },
+    "completedKhatmas": []
   }
 }
+```
 
-// If all 30 parts are now done:
+| Field | Meaning |
+|-------|---------|
+| `completed` | Parts completed **in the khatma in the URL** |
+| `failed` | Requested parts you had NOT reserved in any khatma |
+| `propagatedKhatmas` | All khatmas where the part(s) were marked completed |
+| `perPart` | Map: part number → khatma ids it was completed in |
+| `completedKhatmas` | Khatmas that reached 30/30 and became `completed` |
+| `khatmaCompleted` | `true` if the khatma in the URL reached 30/30 |
+
+```json
+// If the khatma in the URL reaches all 30 parts done:
 {
   "success": true,
   "message": "Khatma completed! 🎉",
   "data": {
     "completed": [3],
-    "khatmaCompleted": true
+    "failed": [],
+    "khatmaCompleted": true,
+    "propagatedKhatmas": ["kh_abc123"],
+    "perPart": { "3": ["kh_abc123"] },
+    "completedKhatmas": ["kh_abc123"]
   }
 }
 ```
@@ -984,6 +1087,15 @@ final total = data['pagination']['total'];
 ### ✉️ Invitation APIs
 
 #### POST /khatmas/{khatmaId}/invite
+Owner-only. Stores an invitation per email. **If the email already belongs to a
+registered user, the backend also:**
+- links the invitation to that account (`invitedUserId`),
+- creates an **in-app notification** (visible in `GET /notifications`),
+- queues a **localized FCM push** (language taken from the user's `language`,
+  falling back to Arabic). Supported languages: `ar`, `en`, `ur`, `hi`.
+
+Example localized push body (ar): `تمت دعوتك للمشاركة في الختمة الخاصة بـ <intention>`
+
 ```json
 // Request Body:
 {
@@ -994,12 +1106,36 @@ final total = data['pagination']['total'];
 {
   "success": true,
   "data": {
-    "sent": 1
+    "sent": 1,       // invitations newly created
+    "notified": 1    // registered users we sent a push to (had an fcmToken)
   }
 }
 ```
 
+The push/notification `data` payload the client receives:
+```json
+{
+  "type": "invitation",
+  "khatmaId": "kh_abc123",
+  "invitedBy": "<inviterUserId>",
+  "actionType": "invitation"
+}
+```
+The client should render two buttons: **Accept** and **Reject**. **Reject**
+opens a sub-menu with three scopes:
+1. Reject this invitation only → `POST /invitations/decline` (this khatma)
+2. Reject this khatma          → same call (an invitation is per khatma)
+3. Reject ALL from this inviter → `POST /invitations/decline-all` with `invitedBy`
+
 #### GET /invitations
+Returns the current user's invitations. Matched by **email AND** by
+`invitedUserId` (so the user still sees invitations even if they signed up /
+changed email after being invited).
+
+> ⚠️ If this returns empty: the logged-in account's email must match the email
+> the owner invited (case-insensitive). Invitations sent to `a@gmail.com` will
+> not appear for a user logged in as `b@yahoo.com`.
+
 ```json
 // Response 200:
 {
@@ -1007,11 +1143,12 @@ final total = data['pagination']['total'];
   "data": {
     "invitations": [
       {
-        "invitationId": "inv_123",
         "khatmaId": "kh_abc123",
+        "email": "friend@email.com",
         "khatmaName": "Mercy Khatma",
         "intention": "For the soul of her father",
-        "invitedBy": "Ahmed Mohamed",
+        "invitedBy": "<inviterUserId>",
+        "invitedUserId": "<yourUserId or empty>",
         "status": "pending",
         "sentAt": "2026-02-18T10:00:00Z"
       }
@@ -1020,8 +1157,11 @@ final total = data['pagination']['total'];
 }
 ```
 
-#### POST /invitations/{invitationId}/accept
+#### POST /invitations/accept  (or /invitations/{invitationId}/accept)
 ```json
+// Request Body:
+{ "khatmaId": "kh_abc123" }
+
 // Response 200:
 {
   "success": true,
@@ -1032,12 +1172,33 @@ final total = data['pagination']['total'];
 }
 ```
 
-#### POST /invitations/{invitationId}/decline
+#### POST /invitations/decline  (or /invitations/{invitationId}/decline)
+Rejects a single invitation (i.e. one khatma).
 ```json
+// Request Body:
+{ "khatmaId": "kh_abc123" }
+
 // Response 200:
 {
   "success": true,
   "message": "Invitation declined"
+}
+```
+
+#### POST /invitations/decline-all
+Rejects **every pending invitation** the current user has received from a
+specific inviter (use for the "Reject all invitations from this user" option).
+```json
+// Request Body:
+{ "invitedBy": "<inviterUserId>" }
+
+// Response 200:
+{
+  "success": true,
+  "data": {
+    "declined": 3,
+    "invitedBy": "<inviterUserId>"
+  }
 }
 ```
 
@@ -1135,14 +1296,18 @@ final total = data['pagination']['total'];
     "khatmaTypes": [
       {
         "typeId": "type_ramadan",
-        "name": "Ramadan Khatma",
+        "name_ar": "ختمة رمضان",
+        "name_en": "Ramadan Khatma",
         "icon": "ramadan_icon",
+        "color": "#4CAF50",
         "isActive": true
       },
       {
         "typeId": "type_shifa",
-        "name": "Healing Khatma",
+        "name_ar": "ختمة الشفاء",
+        "name_en": "Healing Khatma",
         "icon": "shifa_icon",
+        "color": "#1E88E5",
         "isActive": true
       }
     ],

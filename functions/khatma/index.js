@@ -13,6 +13,7 @@
 //   POST /khatmas/{khatmaId}/participants/remind → تذكير مشارك
 //   POST /khatmas/{khatmaId}/participants/remove → إزالة مشارك
 //   GET  /parts/{partNumber}/available-khatmas  → ختمات عامة متاح فيها هذا الجزء
+//   POST /parts/{partNumber}/reserve             → حجز نفس الجزء في عدة ختمات
 // ============================================================
 
 const { success, error } = require('../../shared/response');
@@ -101,6 +102,11 @@ exports.handler = async (event) => {
     // GET /parts/{partNumber}/available-khatmas
     if (method === 'GET' && path.match(/^\/parts\/\d+\/available-khatmas$/)) {
       return await listAvailableKhatmasByPart(event, userId);
+    }
+
+    // POST /parts/{partNumber}/reserve
+    if (method === 'POST' && path.match(/^\/parts\/\d+\/reserve$/)) {
+      return await reservePartAcrossKhatmas(event, userId);
     }
 
     return error(404, 'NOT_FOUND', `Route not found: ${method} ${path}`);
@@ -604,6 +610,101 @@ async function listAvailableKhatmasByPart(event, userId) {
 }
 
 // ============================================================
+// 📌 POST /parts/{partNumber}/reserve
+// ============================================================
+// Reserve the SAME part in multiple khatmas at once for the current user.
+// Body: { "khatmaIds": ["kh_...", "kh_..."] }
+//
+// For each khatma we run a conditional update: reserve only if the part
+// is still `available`. Each khatma reports success or a reason it failed.
+// ============================================================
+async function reservePartAcrossKhatmas(event, userId) {
+  const rawPart = event.pathParameters?.partNumber
+    || (event.path.match(/^\/parts\/(\d+)\/reserve$/) || [])[1];
+  const partNumber = parseInt(rawPart, 10);
+
+  if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > 30) {
+    return error(400, 'VALIDATION_ERROR', 'partNumber must be an integer between 1 and 30');
+  }
+
+  const body = JSON.parse(event.body || '{}');
+  const khatmaIds = Array.isArray(body.khatmaIds) ? [...new Set(body.khatmaIds)] : [];
+
+  if (!khatmaIds.length) {
+    return error(400, 'VALIDATION_ERROR', 'khatmaIds array is required');
+  }
+
+  // اسم المستخدم للعرض
+  const userResult = await dynamodb.send(new GetCommand({
+    TableName: process.env.USERS_TABLE,
+    Key: { userId },
+  }));
+  const userName = userResult.Item?.displayName || 'Unknown';
+
+  const now = new Date().toISOString();
+  const reserved = [];
+  const failed = [];
+
+  for (const khatmaId of khatmaIds) {
+    // تأكد إن الختمة موجودة وقابلة للانضمام
+    const khatmaResult = await dynamodb.send(new GetCommand({
+      TableName: process.env.KHATMAS_TABLE,
+      Key: { khatmaId },
+    }));
+    const khatma = khatmaResult.Item;
+
+    if (!khatma) {
+      failed.push({ khatmaId, reason: 'NOT_FOUND' });
+      continue;
+    }
+    if (khatma.status !== 'active') {
+      failed.push({ khatmaId, reason: 'KHATMA_NOT_ACTIVE' });
+      continue;
+    }
+    if (khatma.type === 'private' && khatma.userId !== userId) {
+      failed.push({ khatmaId, reason: 'FORBIDDEN' });
+      continue;
+    }
+
+    try {
+      await dynamodb.send(new UpdateCommand({
+        TableName: process.env.KHATMA_PARTS_TABLE,
+        Key: { khatmaId, partNumber },
+        UpdateExpression: 'SET #status = :reserved, userId = :uid, userName = :uname, reservedAt = :now',
+        ConditionExpression: '#status = :available',
+        ExpressionAttributeNames: { '#status': 'status' },
+        ExpressionAttributeValues: {
+          ':reserved': 'reserved',
+          ':available': 'available',
+          ':uid': userId,
+          ':uname': userName,
+          ':now': now,
+        },
+      }));
+      reserved.push({ khatmaId, khatmaName: khatma.name });
+    } catch (err) {
+      if (err.name === 'ConditionalCheckFailedException') {
+        failed.push({ khatmaId, reason: 'PART_NOT_AVAILABLE' });
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  if (reserved.length === 0) {
+    return error(409, 'PART_NOT_AVAILABLE', 'Part could not be reserved in any of the requested khatmas');
+  }
+
+  const statusCode = failed.length > 0 ? 207 : 200;
+  return success({
+    partNumber,
+    partName: PART_NAMES[partNumber],
+    reserved,
+    failed,
+  }, statusCode);
+}
+
+// ============================================================
 // 📌 GET /khatmas/{khatmaId} - تفاصيل ختمة
 // ============================================================
 async function getKhatmaDetails(event, userId) {
@@ -990,6 +1091,10 @@ async function reserveParts(event, userId) {
 // 📌 POST /khatmas/{khatmaId}/parts/complete - إتمام أجزاء
 // ============================================================
 // Body: { "partNumbers": [3] }
+//
+// 📋 السلوك: لما المستخدم يكمّل جزء، بنعلّم نفس الجزء "completed" في
+// كل الختمات اللي هو مشترك فيها وحاجز نفس الجزء (status = reserved).
+// الختمات اللي هو مشترك فيها بس مش حاجز الجزء ده → بنسيبها زي ما هي.
 // ============================================================
 async function completeParts(event, userId) {
   const khatmaId = event.pathParameters?.khatmaId
@@ -1002,82 +1107,117 @@ async function completeParts(event, userId) {
   }
 
   const now = new Date().toISOString();
-  const completed = [];
-  const failed = [];
+
+  // كل أجزاء المستخدم في كل الختمات (عشان نعرف فين حاجز نفس الجزء)
+  const myPartsResult = await dynamodb.send(new QueryCommand({
+    TableName: process.env.KHATMA_PARTS_TABLE,
+    IndexName: 'userId-index',
+    KeyConditionExpression: 'userId = :uid',
+    ExpressionAttributeValues: { ':uid': userId },
+  }));
+  const myParts = myPartsResult.Items || [];
+
+  const completed = [];        // part numbers completed in the current khatma
+  const failed = [];           // requested parts not reserved by user anywhere
+  const affectedKhatmaIds = new Set();
+  const perPart = {};          // partNumber -> [khatmaIds where it was completed]
 
   for (const partNumber of partNumbers) {
-    try {
-      // ============================================================
-      // 📋 شرح: Conditional Update
-      // "غير الـ status لـ completed بس لو أنت اللي حاجزه"
-      // محدش يقدر يكمل جزء حد تاني
-      // ============================================================
-      await dynamodb.send(new UpdateCommand({
-        TableName: process.env.KHATMA_PARTS_TABLE,
-        Key: { khatmaId, partNumber },
-        UpdateExpression: 'SET #status = :completed, completedAt = :now',
-        ConditionExpression: '#status = :reserved AND userId = :uid',
-        ExpressionAttributeNames: { '#status': 'status' },
-        ExpressionAttributeValues: {
-          ':completed': 'completed',
-          ':reserved': 'reserved',
-          ':uid': userId,
-          ':now': now,
-        },
-      }));
-      completed.push(partNumber);
-    } catch (err) {
-      if (err.name === 'ConditionalCheckFailedException') {
-        failed.push(partNumber);
-      } else {
-        throw err;
+    // كل نسخ الجزء ده اللي المستخدم حاجزها عبر كل الختمات
+    const targets = myParts.filter(
+      (p) => p.partNumber === partNumber && p.status === 'reserved'
+    );
+
+    if (targets.length === 0) {
+      failed.push(partNumber);
+      continue;
+    }
+
+    perPart[partNumber] = [];
+
+    for (const target of targets) {
+      try {
+        // ============================================================
+        // 📋 Conditional Update: نعلّم completed بس لو المستخدم هو الحاجز
+        // ============================================================
+        await dynamodb.send(new UpdateCommand({
+          TableName: process.env.KHATMA_PARTS_TABLE,
+          Key: { khatmaId: target.khatmaId, partNumber },
+          UpdateExpression: 'SET #status = :completed, completedAt = :now',
+          ConditionExpression: '#status = :reserved AND userId = :uid',
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: {
+            ':completed': 'completed',
+            ':reserved': 'reserved',
+            ':uid': userId,
+            ':now': now,
+          },
+        }));
+        perPart[partNumber].push(target.khatmaId);
+        affectedKhatmaIds.add(target.khatmaId);
+        if (target.khatmaId === khatmaId) {
+          completed.push(partNumber);
+        }
+      } catch (err) {
+        if (err.name !== 'ConditionalCheckFailedException') {
+          throw err;
+        }
+        // اتحجز/اتكمل من حد تاني أو الحالة اتغيرت → نتخطاه
       }
     }
   }
 
   // ============================================================
-  // 📋 شرح: هل الختمة اكتملت؟
-  // نشوف كام جزء مكتمل - لو 30 → الختمة خلصت! 🎉
+  // 📋 نحدّث عدّاد الأجزاء المكتملة لكل ختمة اتأثرت
+  // ولو وصلت 30 → الختمة خلصت 🎉
   // ============================================================
   let khatmaCompleted = false;
-  if (completed.length > 0) {
+  const completedKhatmas = [];
+
+  for (const kid of affectedKhatmaIds) {
     const partsResult = await dynamodb.send(new QueryCommand({
       TableName: process.env.KHATMA_PARTS_TABLE,
       KeyConditionExpression: 'khatmaId = :kid',
-      ExpressionAttributeValues: { ':kid': khatmaId },
+      ExpressionAttributeValues: { ':kid': kid },
     }));
 
     const allParts = partsResult.Items || [];
-    const completedCount = allParts.filter(p => p.status === 'completed').length;
+    const completedCount = allParts.filter((p) => p.status === 'completed').length;
 
-    // تحديث عدد الأجزاء المكتملة في الختمة
-    const updateData = {
-      ':count': completedCount,
-      ':now': now,
-    };
+    const updateData = { ':count': completedCount, ':now': now };
     let updateExpr = 'SET completedParts = :count, updatedAt = :now';
+    let exprNames;
 
     if (completedCount >= 30) {
-      khatmaCompleted = true;
       updateExpr += ', #status = :completed';
       updateData[':completed'] = 'completed';
+      exprNames = { '#status': 'status' };
+      completedKhatmas.push(kid);
+      if (kid === khatmaId) {
+        khatmaCompleted = true;
+      }
     }
 
-    const exprNames = { '#status': 'status' };
-
-    await dynamodb.send(new UpdateCommand({
+    const updateInput = {
       TableName: process.env.KHATMAS_TABLE,
-      Key: { khatmaId },
+      Key: { khatmaId: kid },
       UpdateExpression: updateExpr,
       ExpressionAttributeValues: updateData,
-      ExpressionAttributeNames: exprNames,
-    }));
+    };
+    if (exprNames) {
+      updateInput.ExpressionAttributeNames = exprNames;
+    }
+
+    await dynamodb.send(new UpdateCommand(updateInput));
   }
 
   return success({
     completed,
     failed,
     khatmaCompleted,
+    propagatedKhatmas: [...affectedKhatmaIds],
+    perPart,
+    completedKhatmas,
     message: khatmaCompleted ? 'Khatma completed! 🎉' : undefined,
   });
 }

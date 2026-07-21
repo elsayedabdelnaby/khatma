@@ -451,7 +451,7 @@ async function loadKhatmaTypes() {
     grid.innerHTML = types.map(t => `
       <div class="card type-card">
         <div class="card-body">
-          <div class="type-icon">${escHtml(t.icon || '📖')}</div>
+          <div class="type-icon" ${t.color ? `style="background:${escHtml(t.color)}22;border:1px solid ${escHtml(t.color)}"` : ''}>${escHtml(t.icon || '📖')}</div>
           <div class="card-title">
             <span class="status-dot ${t.isActive ? 'active' : 'inactive'}"></span>
             ${escHtml(t.name_en || t.name_ar || 'Untitled')}
@@ -462,6 +462,7 @@ async function loadKhatmaTypes() {
           </div>
           <div style="margin-top:8px">
             <span class="type-badge">Order: ${t.sortOrder || 0}</span>
+            ${t.color ? `<span class="type-badge" style="display:inline-flex;align-items:center;gap:4px"><span style="width:12px;height:12px;border-radius:3px;display:inline-block;background:${escHtml(t.color)}"></span>${escHtml(t.color)}</span>` : ''}
           </div>
         </div>
         <div class="card-actions">
@@ -489,6 +490,8 @@ function showKhatmaTypeModal() {
   document.getElementById('ktDescAr').value = '';
   document.getElementById('ktDescEn').value = '';
   document.getElementById('ktIcon').value = '';
+  document.getElementById('ktColor').value = '#4CAF50';
+  document.getElementById('ktColorHex').value = '#4CAF50';
   document.getElementById('ktSortOrder').value = '0';
   document.getElementById('ktIsActive').checked = true;
   openModal('khatmaTypeModal');
@@ -504,6 +507,8 @@ function editKhatmaType(t) {
   document.getElementById('ktDescAr').value = t.description_ar || '';
   document.getElementById('ktDescEn').value = t.description_en || '';
   document.getElementById('ktIcon').value = t.icon || '';
+  document.getElementById('ktColor').value = t.color || '#4CAF50';
+  document.getElementById('ktColorHex').value = t.color || '#4CAF50';
   document.getElementById('ktSortOrder').value = t.sortOrder || 0;
   document.getElementById('ktIsActive').checked = t.isActive !== false;
   openModal('khatmaTypeModal');
@@ -523,6 +528,7 @@ async function saveKhatmaType() {
     description_ar: document.getElementById('ktDescAr').value,
     description_en: document.getElementById('ktDescEn').value,
     icon: document.getElementById('ktIcon').value,
+    color: document.getElementById('ktColor').value,
     sortOrder: parseInt(document.getElementById('ktSortOrder').value) || 0,
     isActive: document.getElementById('ktIsActive').checked,
   };

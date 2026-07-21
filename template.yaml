@@ -309,6 +309,11 @@ Resources:
           Properties:
             Path: /parts/{partNumber}/available-khatmas
             Method: get
+        ReservePartAcrossKhatmas:
+          Type: Api
+          Properties:
+            Path: /parts/{partNumber}/reserve
+            Method: post
 
   # ==========================================================
   # ⚡ LAMBDA FUNCTION #4: Home Page
@@ -432,6 +437,9 @@ Resources:
             TableName: !Ref KhatmasTable
         - DynamoDBCrudPolicy:
             TableName: !Ref UsersTable
+        # in-app notifications for invited users who already have an account
+        - DynamoDBCrudPolicy:
+            TableName: !Ref NotificationsTable
         # SQS: permission to enqueue invitation notification messages
         - SQSSendMessagePolicy:
             QueueName: !GetAtt InvitationsQueue.QueueName
@@ -455,6 +463,11 @@ Resources:
           Type: Api
           Properties:
             Path: /invitations/{invitationId}/decline
+            Method: post
+        DeclineAllInvitations:
+          Type: Api
+          Properties:
+            Path: /invitations/decline-all
             Method: post
 
   # ==========================================================
